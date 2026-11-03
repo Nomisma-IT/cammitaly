@@ -35,7 +35,7 @@ def coppie_of(entries: list[tuple[str, str, str]], lines: dict) -> pd.DataFrame:
 
 # --- classi D-2 ---
 
-def test_stesso_nome_con_tracciato_identico_o_traslato_di_30_m_e_duplicato_di_80_m_e_limbo() -> None:
+def test_stesso_nome_con_tracciato_identico_o_traslato_di_30_m_e_duplicato_di_80_m_e_distinto() -> None:
     entries = [("cdi:1", "cdi", "Via Alfa"), ("mitur:2", "mitur", "Via Alfa"), ("mitur:3", "mitur", "Cammino Alfa")]
     lines = {"cdi:1": horizontal(0, 10_000), "mitur:2": horizontal(0, 10_000, y=30), "mitur:3": horizontal(0, 10_000, y=-80)}
     coppie = coppie_of(entries, lines)
@@ -43,7 +43,7 @@ def test_stesso_nome_con_tracciato_identico_o_traslato_di_30_m_e_duplicato_di_80
     assert identical_shifted["classe"] == DUPLICATO and identical_shifted["motivo"] == config.MOTIVO_DUPLICATO
     assert identical_shifted["quota_minore"] == 1.0 and identical_shifted["rapporto_lunghezza"] == 1.0
     far = coppie.loc[("cdi:1", "mitur:3")]
-    assert (far["classe"], far["motivo"]) == (LIMBO, config.MOTIVO_NOME_SI_TRACCIATO_NO)
+    assert (far["classe"], far["motivo"]) == (DISTINTO, config.MOTIVO_NOME_SI_TRACCIATO_NO)
     assert far["quota_minore"] == 0.0 and far["punteggio_nome"] == 100
 
 
@@ -62,7 +62,32 @@ def test_la_quota_minore_coincide_con_la_primitiva_di_matching() -> None:
     pair = coppie_of([("cdi:1", "cdi", "Via Alfa"), ("mitur:2", "mitur", "Via Alfa")], {"cdi:1": first, "mitur:2": second})
     expected = matching.overlap_share(first, second, NEAR, STEP)
     assert pair.iloc[0]["quota_minore"] == pytest.approx(expected, abs=1e-4)
-    assert pair.iloc[0]["classe"] == LIMBO
+    assert pair.iloc[0]["classe"] == DUPLICATO  # 0,85: sopra la soglia del 70%
+
+
+@pytest.mark.parametrize(
+    ("length_m", "expected_class", "expected_reason"),
+    [
+        (10_000, DUPLICATO, config.MOTIVO_DUPLICATO),  # quota 1,0
+        (7100, DUPLICATO, config.MOTIVO_DUPLICATO),  # appena sopra il 70%
+        (6900, LIMBO, config.MOTIVO_NOME_SI_TRACCIATO_INTERMEDIO),  # appena sotto il 70%
+        (5100, LIMBO, config.MOTIVO_NOME_SI_TRACCIATO_INTERMEDIO),  # appena sopra il 50%
+        (4900, DISTINTO, config.MOTIVO_NOME_SI_TRACCIATO_NO),  # appena sotto il 50%
+        (0, DISTINTO, config.MOTIVO_NOME_SI_TRACCIATO_NO),
+    ],
+)
+def test_nomi_simili_le_fasce_del_70_e_del_50_per_cento_della_linea_piu_corta(
+    length_m: float, expected_class: str, expected_reason: str
+) -> None:
+    """La linea corta (10 km) ha `length_m` metri dentro i 50 m dalla lunga, il resto a 5 km di distanza."""
+    short = MultiLineString([horizontal(0, length_m), horizontal(0, 10_000 - length_m, y=5000)]) if 0 < length_m < 10_000 else (
+        horizontal(0, 10_000) if length_m else horizontal(0, 10_000, y=5000)
+    )
+    entries = [("cdi:1", "cdi", "Via Alfa"), ("mitur:2", "mitur", "Via Alfa")]
+    long_line = horizontal(0, 100_000)
+    pair = coppie_of(entries, {"cdi:1": long_line, "mitur:2": short}).loc[("cdi:1", "mitur:2")]
+    assert (pair["classe"], pair["motivo"]) == (expected_class, expected_reason)
+    assert pair["quota_minore"] == pytest.approx(length_m / 10_000, abs=0.01)
 
 
 def test_geometria_assente_da_limbo_se_il_nome_e_simile_e_distinto_se_e_diverso() -> None:
@@ -90,6 +115,7 @@ def share_table(rows: list[tuple[float, float, float, float]]) -> pd.DataFrame:
     frame[dedup.share_column("a_in_b", NEAR)] = frame.pop("a_in_b")
     frame[dedup.share_column("b_in_a", NEAR)] = frame.pop("b_in_a")
     frame["punteggio_nome"] = 100.0
+    frame["parola_comune"] = True
     return frame
 
 
@@ -105,7 +131,7 @@ def test_a_parita_di_lunghezza_la_quota_minore_e_la_piu_bassa_e_non_dipende_dall
     assert dedup.minor_is_a(forward, NEAR).tolist() == [False, True, True]
     # classe identica scambiando a e b: prima (a in b 0,96) diventava duplicato o limbo secondo l'ordine del catalogo
     classes = dedup.classify(forward, config.DEDUP_NAME_MIN_SCORE, config.DEDUP_OVERLAP_MIN, NEAR)["classe"]
-    assert classes.tolist() == [LIMBO, LIMBO, LIMBO]
+    assert classes.tolist() == [LIMBO, LIMBO, DUPLICATO]  # quota minore 0,50 / 0,50 / 0,70: le prime due da verificare
 
 
 def test_quota_minore_vuota_se_manca_una_geometria() -> None:
@@ -154,21 +180,58 @@ def test_punteggio_cento_per_inclusione_e_segnalato_e_il_tracciato_decide() -> N
     lines = {"cdi:1": horizontal(0, 10_000), "mitur:2": horizontal(0, 10_000, y=900), "mitur:3": horizontal(0, 10_000, y=5)}
     coppie = coppie_of(entries, lines)
     contained = coppie.loc[("cdi:1", "mitur:2")]
-    assert contained["punteggio_nome"] == 100 and contained["nome_contenuto"] and contained["classe"] == LIMBO
+    assert contained["punteggio_nome"] == 100 and contained["nome_contenuto"] and contained["classe"] == DISTINTO
     assert contained["punteggio_nome_sort"] < 100
     identical = coppie.loc[("cdi:1", "mitur:3")]
     assert identical["punteggio_nome"] == 100 and not identical["nome_contenuto"] and identical["classe"] == DUPLICATO
+
+
+# --- sezioni (D-12, regola 2) ---
+
+def test_tracciato_contenuto_al_95_con_una_parola_in_comune_e_sezione_senza_parole_in_comune_e_limbo() -> None:
+    entries = [
+        ("cdi:1", "cdi", "Via di Francesco da Firenze a La Verna"), ("mitur:2", "mitur", "Via di Francesco in Toscana"),
+        ("cdi:3", "cdi", "Cammino Zeta"),
+    ]
+    whole = horizontal(0, 100_000)
+    lines = {"cdi:1": horizontal(0, 40_000, y=10), "mitur:2": whole, "cdi:3": horizontal(0, 40_000, y=-10)}
+    coppie = coppie_of(entries, lines)
+    section = coppie.loc[("cdi:1", "mitur:2")]
+    assert section["punteggio_nome"] < config.DEDUP_NAME_MIN_SCORE and section["parola_comune"]
+    assert (section["classe"], section["motivo"]) == (config.CLASSE_SEZIONE, config.MOTIVO_SEZIONE)
+    assert section["quota_minore"] == 1.0
+    no_word = coppie.loc[("mitur:2", "cdi:3")]
+    assert not no_word["parola_comune"]
+    assert (no_word["classe"], no_word["motivo"]) == (LIMBO, config.MOTIVO_TRACCIATO_SI_NOME_NO)
+
+
+def test_sezione_sotto_il_95_per_cento_o_senza_una_geometria_non_si_fonde() -> None:
+    entries = [("cdi:1", "cdi", "Via di Francesco da Firenze"), ("mitur:2", "mitur", "Via di Francesco in Toscana")]
+    partial = MultiLineString([horizontal(0, 9000, y=10), horizontal(0, 1000, y=5000)])  # 90% dentro
+    pair = coppie_of(entries, {"cdi:1": partial, "mitur:2": horizontal(0, 100_000)}).loc[("cdi:1", "mitur:2")]
+    assert pair["classe"] == DISTINTO and 0.85 < pair["quota_minore"] < 0.95
+    pair = coppie_of(entries, {"mitur:2": horizontal(0, 100_000)})
+    assert pair.empty  # nome non simile e una geometria assente: nemmeno candidata
+
+
+def test_la_regola_della_sezione_non_cambia_con_lo_scambio_di_a_e_b() -> None:
+    entries = [("cdi:1", "cdi", "Via di Francesco da Firenze a La Verna"), ("mitur:2", "mitur", "Via di Francesco in Toscana")]
+    lines = {"cdi:1": horizontal(0, 40_000, y=10), "mitur:2": horizontal(0, 100_000)}
+    forward = coppie_of(entries, lines).iloc[0]
+    swapped = coppie_of(entries[::-1], lines).iloc[0]
+    assert forward["classe"] == swapped["classe"] == config.CLASSE_SEZIONE
 
 
 # --- limbo ---
 
 def test_riga_di_limbo_ha_oggetto_motivo_e_numeri_nel_dettaglio() -> None:
     entries = [("cdi:1", "cdi", "Via Alfa"), ("mitur:2", "mitur", "Via Alfa")]
-    coppie = coppie_of(entries, {"cdi:1": horizontal(0, 10_000), "mitur:2": horizontal(0, 10_000, y=-80)}).reset_index()
+    short = MultiLineString([horizontal(0, 6000), horizontal(0, 4000, y=5000)])  # quota 0,60: da verificare
+    coppie = coppie_of(entries, {"cdi:1": horizontal(0, 10_000), "mitur:2": short}).reset_index()
     (row,) = dedup.limbo_rows(coppie)
     assert list(row) == config.LIMBO_FIELDS
-    assert row["oggetto"] == "cdi:1|mitur:2" and row["motivo"] == config.MOTIVO_NOME_SI_TRACCIATO_NO
-    for expected in ("punteggio nome 100.0", "quota minore 0.0000", "10.0 km e 10.0 km", "Via Alfa / Via Alfa"):
+    assert row["oggetto"] == "cdi:1|mitur:2" and row["motivo"] == config.MOTIVO_NOME_SI_TRACCIATO_INTERMEDIO
+    for expected in ("punteggio nome 100.0", "quota minore 0.6000", "10.0 km e 10.0 km", "Via Alfa / Via Alfa"):
         assert expected in row["dettaglio"]
 
 
@@ -191,7 +254,7 @@ def test_catena_di_tre_cammini_e_segnalata_e_la_coppia_completa_no() -> None:
     }
     catalogue = make_catalogue(entries)
     coppie = dedup.coppie_frame(dedup.pair_table(catalogue, lines, NEARS))
-    assert coppie.set_index(["cammino_a", "cammino_b"]).loc[("cdi:1", "mitur:3"), "classe"] == LIMBO
+    assert coppie.set_index(["cammino_a", "cammino_b"]).loc[("cdi:1", "mitur:3"), "classe"] == DISTINTO
     gruppi = dedup.gruppi_frame(catalogue, lines, coppie[coppie["classe"] == DUPLICATO])
     assert list(gruppi.columns) == list(config.DEDUP_GRUPPI_FIELDS)
     by_group = gruppi.groupby("gruppo")
@@ -202,6 +265,65 @@ def test_catena_di_tre_cammini_e_segnalata_e_la_coppia_completa_no() -> None:
         "cdi:1": True, "cdi:2": True, "mitur:3": True, "cdi:4": False, "mitur:5": False,
     }
     assert gruppi.set_index("cammino_id").loc["cdi:2", "lunghezza_m"] == 10_000
+
+
+# --- cammini unici e membri ---
+
+def merging_of(edges: list[tuple[str, str, str]]) -> pd.DataFrame:
+    return pd.DataFrame(edges, columns=["cammino_a", "cammino_b", "classe"])
+
+
+def toy_unique_catalogue() -> pd.DataFrame:
+    entries = [
+        ("cdi:1", "cdi", "Via Alfa"), ("mitur:2", "mitur", "Via Alfa Grande"), ("cdi:3", "cdi", "Alfa tratto"),
+        ("cdi:4", "cdi", "Cammino Zeta"), ("mitur:5", "mitur", "Via Beta"), ("mitur:6", "mitur", "Via Beta bis"),
+    ]
+    catalogue = make_catalogue(entries)
+    catalogue["stato_geometria"] = ["parziale", "ok", "ok", "assente", "ok", "parziale"]
+    return catalogue
+
+
+def test_cammini_unici_componenti_con_nome_del_piu_lungo_alias_ruoli_e_singoli() -> None:
+    lengths = {"cdi:1": 40.0, "mitur:2": 100.0, "cdi:3": 10.0, "mitur:5": 50.0, "mitur:6": 50.0}
+    edges = [("cdi:1", "mitur:2", DUPLICATO), ("cdi:3", "mitur:2", config.CLASSE_SEZIONE), ("mitur:5", "mitur:6", DUPLICATO)]
+    unici, membri = dedup.unique_frames(toy_unique_catalogue(), lengths, merging_of(edges))
+    assert list(unici.columns) == list(config.DEDUP_UNICI_FIELDS) and list(membri.columns) == list(config.DEDUP_MEMBRI_FIELDS)
+    assert unici["n_membri"].tolist() == [3, 1, 2] and len(unici) == 3
+    alfa = unici.iloc[0]
+    assert alfa["nome"] == "Via Alfa Grande" and alfa["membri"] == "cdi:1|mitur:2|cdi:3"
+    assert alfa["alias"] == "Via Alfa|Alfa tratto" and alfa["fonti"] == "cdi|mitur" and alfa["stato"] == "ok"
+    assert alfa["catena"]  # cdi:1 e cdi:3 non sono legati tra loro
+    roles = membri.set_index("cammino_id")["ruolo"].to_dict()
+    assert roles["mitur:2"] == config.RUOLO_PRINCIPALE and roles["cdi:3"] == config.RUOLO_SEZIONE and roles["cdi:1"] == config.RUOLO_DUPLICATO
+    zeta = unici[unici["nome"] == "Cammino Zeta"].iloc[0]
+    assert (zeta["n_membri"], zeta["alias"], zeta["stato"], zeta["catena"]) == (1, "", "assente", False)
+    beta = unici.iloc[2]
+    assert beta["nome"] == "Via Beta" and beta["alias"] == "Via Beta bis"  # a pari lunghezza il primo del catalogo
+    assert beta["stato"] == "ok"
+
+
+def test_ogni_cammino_del_catalogo_compare_una_volta_in_membri_e_i_nomi_uguali_non_sono_alias() -> None:
+    catalogue = toy_unique_catalogue()
+    catalogue.loc[catalogue["cammino_id"] == "mitur:6", "nome"] = "Via Beta"
+    edges = [("mitur:5", "mitur:6", DUPLICATO), ("cdi:1", "mitur:2", DUPLICATO)]
+    unici, membri = dedup.unique_frames(catalogue, {}, merging_of(edges))  # senza lunghezze: vince il primo del catalogo
+    assert membri["cammino_id"].is_unique and set(membri["cammino_id"]) == set(catalogue["cammino_id"])
+    assert unici["n_membri"].sum() == len(catalogue) == len(membri)
+    assert set(membri["cammino_unico_id"]) == set(unici["cammino_unico_id"])
+    assert unici.set_index("nome").loc["Via Beta", "alias"] == ""
+    assert unici.iloc[0]["nome"] == "Via Alfa"
+
+
+def test_senza_nessun_arco_ogni_cammino_e_il_proprio_gruppo_e_la_catena_si_segnala() -> None:
+    catalogue = toy_unique_catalogue()
+    unici, membri = dedup.unique_frames(catalogue, {}, merging_of([]))
+    assert len(unici) == len(membri) == len(catalogue) and (membri["ruolo"] == config.RUOLO_PRINCIPALE).all()
+    chain = [("cdi:1", "mitur:2", DUPLICATO), ("mitur:2", "cdi:3", DUPLICATO)]  # cdi:1 e cdi:3 non legati
+    unici, _ = dedup.unique_frames(catalogue, {"cdi:1": 1.0, "mitur:2": 3.0, "cdi:3": 2.0}, merging_of(chain))
+    assert unici.iloc[0]["catena"] and not unici.iloc[1:]["catena"].any()
+    complete = chain + [("cdi:1", "cdi:3", DUPLICATO)]
+    unici, _ = dedup.unique_frames(catalogue, {}, merging_of(complete))
+    assert not unici["catena"].any()
 
 
 # --- sensibilita' ---
@@ -293,7 +415,7 @@ def test_quasi_duplicato_con_variante_in_una_sola_fonte() -> None:
     lines = dedup.cammino_lines(tratte)
     pairs = dedup.pair_table(make_catalogue(entries), lines, NEARS)
     coppie = dedup.coppie_frame(pairs)
-    assert coppie.iloc[0]["classe"] == LIMBO and 0.5 <= coppie.iloc[0]["quota_minore"] < config.DEDUP_OVERLAP_MIN
+    assert coppie.iloc[0]["classe"] == DUPLICATO and config.DEDUP_QUASI_OVERLAP_MIN <= coppie.iloc[0]["quota_minore"] < config.DEDUP_QUASI_OVERLAP_MAX
     (row,) = dedup.quasi_frame(pairs, lines, tratte).to_dict("records")
     assert list(row) == list(config.DEDUP_QUASI_FIELDS)
     assert row["quota_minore"] == coppie.iloc[0]["quota_minore"]
@@ -369,7 +491,7 @@ def test_selezione_per_il_confronto_unisce_duplicati_e_quasi_duplicati() -> None
 
 def test_run_scrive_le_sei_uscite_con_le_colonne_del_contratto(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     tratte = toy_tratte()
-    entries = [("cdi:1", "cdi", "Via Alfa"), ("mitur:2", "mitur", "Via Alfa"), ("mitur:3", "mitur", "Via Zeta")]
+    entries = [("cdi:1", "cdi", "Via Alfa"), ("mitur:2", "mitur", "Via Alfa"), ("mitur:3", "mitur", "Via Alfa Zeta")]
     monkeypatch.setattr(config, "DEDUP_DIR", tmp_path)
     monkeypatch.setattr(dedup, "load_catalogue", lambda: make_catalogue(entries))
     monkeypatch.setattr(common, "read_tratte", lambda fonti: tratte)
@@ -378,16 +500,20 @@ def test_run_scrive_le_sei_uscite_con_le_colonne_del_contratto(tmp_path: Path, m
     fields = {
         "coppie": config.DEDUP_COPPIE_FIELDS, "limbo": config.LIMBO_FIELDS, "gruppi": config.DEDUP_GRUPPI_FIELDS,
         "sensibilita": config.DEDUP_SENSIBILITA_FIELDS, "quasi": config.DEDUP_QUASI_FIELDS, "comuni": config.DEDUP_COMUNI_FIELDS,
+        "unici": config.DEDUP_UNICI_FIELDS, "membri": config.DEDUP_MEMBRI_FIELDS,
     }
     for name, columns in fields.items():
         frame = pd.read_csv(tmp_path / config.DEDUP_FILES[name], encoding="utf-8")
         assert list(frame.columns) == list(columns)
     assert len(pd.read_csv(tmp_path / config.DEDUP_FILES["sensibilita"])) == 48
     limbo = pd.read_csv(tmp_path / config.DEDUP_FILES["limbo"])
-    assert limbo["oggetto"].tolist() == ["cdi:1|mitur:2"]
+    assert sorted(limbo["oggetto"]) == ["cdi:1|mitur:3", "mitur:2|mitur:3"]  # nome simile, geometria assente
     # il limbo ha lo scrittore dei limbo_<fonte>.csv (fine riga CRLF); le tabelle hanno LF
     assert b"\r\n" in (tmp_path / config.DEDUP_FILES["limbo"]).read_bytes()
     assert b"\r\n" not in (tmp_path / config.DEDUP_FILES["coppie"]).read_bytes()
+    unici = pd.read_csv(tmp_path / config.DEDUP_FILES["unici"], keep_default_na=False)
+    membri = pd.read_csv(tmp_path / config.DEDUP_FILES["membri"])
+    assert len(unici) == 2 and len(membri) == 3 and membri["cammino_id"].is_unique  # cdi:1 con mitur:2 (duplicato), mitur:3 da solo
     comuni = pd.read_csv(tmp_path / config.DEDUP_FILES["comuni"])
     assert comuni["classe"].tolist() == [config.CLASSE_QUASI_DUPLICATO]
     assert not np.isnan(comuni.loc[0, "jaccard"])

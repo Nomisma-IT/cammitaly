@@ -35,6 +35,7 @@ def test_parse_listing_fixture() -> None:
     one, two = mitur.parse_listing(PAGE)
     assert one["nome"] == "Via Uno"
     assert one["regioni"] == "Basilicata, Calabria"
+    assert one["distanza"] == "400 km" and mitur.parse_distance_km(one["distanza"]) == "400"
     assert one["url_percorso"].endswith("/2023/06/X.zip")
     assert one["sito_web"] == "https://sito.example/"
     assert two["url_percorso"] == ""  # link disattivato (href con '#'): nessuna traccia
@@ -51,6 +52,13 @@ def test_card_without_service_icons_has_an_empty_list() -> None:
     markup = re.sub(r"<ul.*?</ul>", "", PAGE, flags=re.DOTALL)
     one, two = mitur.parse_listing(markup)
     assert (one["servizi"], two["servizi"]) == ([], [])
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("400 km", "400"), ("1.050 km", "1050"), ("121,5 km", "121.5"), ("263,08 km", "263.08"), ("", ""), ("circa 30 km", ""),
+])
+def test_distance_in_italian_format_to_km(text: str, expected: str) -> None:
+    assert mitur.parse_distance_km(text) == expected
 
 
 def test_catalog_note_to_iso_date_and_decree() -> None:

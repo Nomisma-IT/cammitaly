@@ -465,7 +465,7 @@ def cammino_row(card: dict[str, str], frame: Any, result: CardResult) -> dict[st
     walk = own[own["tipo"].isin(WALKING)]
     return {
         "cammino_id": cid, "fonte": config.MITUR_FONTE, "nome": card["nome"], "regioni": card["regioni"],
-        "link": card["sito_web"], "lunghezza_dichiarata_km": "", "n_tappe_dichiarate": "",
+        "link": card["sito_web"], "lunghezza_dichiarata_km": card["distanza_km"], "n_tappe_dichiarate": "",
         "n_tratte": len(own), "lunghezza_m": round(float(walk["lunghezza_m"].sum()), config.METERS_DECIMALS),
         "stato_geometria": common.stato_geometria(distinct, None, len(own)),
         "note": "; ".join(_card_notes(card, result, distinct, len(own))),

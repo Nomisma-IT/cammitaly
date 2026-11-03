@@ -1,11 +1,19 @@
-"""Deduplicazione dei cammini di camminiditalia.org e del Catalogo MiTur: test della regola del committente.
+"""Deduplicazione dei cammini di camminiditalia.org e del Catalogo MiTur: regola del committente (D-12).
 
-Regola: due cammini sono lo stesso se i nomi sono simili E almeno DEDUP_OVERLAP_MIN del piu' corto sta entro
-DEDUP_NEAR_M metri dall'altro. Con una sola condizione vera la coppia e' in limbo. Si confrontano tutte le coppie,
-anche dentro la stessa fonte. Le uscite sono in config.DEDUP_DIR; nulla qui cambia i cammini o le tratte.
+Regola, con la quota del piu' corto entro DEDUP_NEAR_M metri dall'altro (soglie in config):
+- nomi simili: quota >= DEDUP_OVERLAP_MIN duplicato; sotto DEDUP_DISTINCT_BELOW (due geometrie presenti) distinto; in
+  mezzo limbo "da verificare"; con una geometria assente limbo;
+- nomi non simili: quota >= DEDUP_SECTION_OVERLAP_MIN e almeno una parola in comune tra le chiavi dei nomi = sezione
+  (il corto e' una parte dell'altro, si fonde); senza parola in comune limbo.
+Si confrontano tutte le coppie, anche dentro la stessa fonte. Le uscite sono in config.DEDUP_DIR; nulla qui cambia i
+cammini o le tratte.
+
+cammini_unici.csv e membri.csv: componenti connesse delle coppie duplicato e sezione; un cammino unito tiene tutte le
+tracce delle sue versioni. Non c'e' un file di geometrie: chi serve le tratte (tag, passo P5) le raccoglie per
+cammino_id dei membri, con le loro etichette.
 """
 from collections import defaultdict
-from collections.abc import Hashable, Iterable, Mapping, Sequence
+from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,9 +45,12 @@ def write_outputs(outputs: Mapping[str, pd.DataFrame]) -> None:
 
 # --- Dati di partenza ---
 
-def load_catalogue() -> pd.DataFrame:
-    """Tutti i cammini delle fonti, prima camminiditalia poi MiTur, ciascuna per id, con la chiave del nome."""
-    columns = ["cammino_id", "fonte", "nome", "stato_geometria"]
+def load_catalogue(extra_columns: Sequence[str] = ()) -> pd.DataFrame:
+    """Tutti i cammini delle fonti, prima camminiditalia poi MiTur, ciascuna per id, con la chiave del nome.
+
+    extra_columns: altre colonne di cammini_<fonte>.csv da tenere (l'abbinamento con OSM usa regioni e lunghezza dichiarata).
+    """
+    columns = ["cammino_id", "fonte", "nome", "stato_geometria", *extra_columns]
     frames = [
         pd.DataFrame(common.read_csv(Path(config.CAMMINI_CSV_TEMPLATE.format(fonte=fonte))))[columns].sort_values("cammino_id")
         for fonte in config.DEDUP_FONTI
@@ -56,6 +67,28 @@ def cammino_lines(tratte: gpd.GeoDataFrame) -> dict[str, BaseGeometry]:
     """
     dissolved = crossing.dissolve_cammini(tratte, config.DEDUP_TIPI)
     return {cammino_id: shapely.line_merge(geom) for cammino_id, geom in dissolved.items()}
+
+
+def osm_substitute_tratte(catalogue_ids: Iterable[str], tratte: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Per i cammini del catalogo senza tracce proprie, una tratta (fonte osm, tipo altro) con la geometria OSM abbinata.
+
+    La geometria viene da geometrie_osm.gpkg (python -m cammitaly osm-match); se il file manca non c'e' nessun sostituto.
+    tratta_id e nome sono gli id delle relazioni OSM.
+    """
+    path = config.OSM_MATCH_DIR / config.OSM_MATCH_FILES["geometrie"]
+    if not path.exists():
+        print(f"nessuna geometria OSM sostitutiva: manca {path}")
+        return common.tratte_frame([])
+    own = set(tratte.loc[tratte["tipo"].isin(config.DEDUP_TIPI), "cammino_id"])
+    osm = gpd.read_file(path, layer=config.OSM_MATCH_LAYER, engine="pyogrio")
+    chosen = osm[osm["cammino_id"].isin(set(catalogue_ids) - own)]
+    return common.tratte_frame([
+        {
+            "tratta_id": row.osm_ids, "cammino_id": row.cammino_id, "fonte": config.OSM_FONTE, "nome": row.osm_ids,
+            "tipo": config.TIPO_ALTRO, "lunghezza_m": row.geometry.length, "geometry": row.geometry,
+        }
+        for row in chosen.itertuples()
+    ])
 
 
 # --- Quote di sovrapposizione ---
@@ -99,10 +132,13 @@ def share_column(direction: str, near_m: float) -> str:
     return f"quota_{direction}_{near_m:g}"
 
 
-def pair_table(catalogue: pd.DataFrame, lines: Lines, near_values: Sequence[float]) -> pd.DataFrame:
+def pair_table(
+    catalogue: pd.DataFrame, lines: Lines, near_values: Sequence[float], osm_ids: Collection[str] = frozenset()
+) -> pd.DataFrame:
     """Una riga per coppia non ordinata di cammini (a prima di b nel catalogo), con nomi, lunghezze e quote per ogni distanza.
 
     Le quote sono NaN se uno dei due non ha geometria, 0 se entrambi l'hanno ma i riquadri non si toccano.
+    osm_ids: cammini la cui linea e' la geometria OSM sostitutiva; la colonna geometria_osm dice quale lato la usa.
     """
     ids = catalogue["cammino_id"].to_numpy()
     first, second = np.triu_indices(len(ids), 1)
@@ -115,9 +151,15 @@ def pair_table(catalogue: pd.DataFrame, lines: Lines, near_values: Sequence[floa
             pairs[f"{column}_{suffix}"] = catalogue[source].to_numpy()[order]
         pairs[f"lunghezza_{suffix}_m"] = lengths[order]
     pairs["punteggio_nome"], pairs["punteggio_nome_sort"] = set_scores[first, second], sort_scores[first, second]
+    side_a, side_b = pairs["cammino_a"].isin(osm_ids), pairs["cammino_b"].isin(osm_ids)
+    pairs["geometria_osm"] = np.select(
+        [side_a & side_b, side_a, side_b], [config.DEDUP_OSM_SIDE_BOTH, config.DEDUP_OSM_SIDE_A, config.DEDUP_OSM_SIDE_B],
+        default=config.DEDUP_OSM_SIDE_NONE,
+    )
     pairs["nome_contenuto"] = [
         score == 100 and set(keys[a].split()) != set(keys[b].split()) for a, b, score in zip(first, second, pairs["punteggio_nome"])
     ]
+    pairs["parola_comune"] = [bool(set(keys[a].split()) & set(keys[b].split())) for a, b in zip(first, second)]
     shares = overlap_shares(lines, near_values)
     nears_desc = sorted(near_values, reverse=True)
     for direction, (own, other) in {"a_in_b": ("cammino_a", "cammino_b"), "b_in_a": ("cammino_b", "cammino_a")}.items():
@@ -148,15 +190,24 @@ def minor_share(pairs: pd.DataFrame, near_m: float) -> pd.Series:
 # --- Classi ---
 
 def classify(pairs: pd.DataFrame, name_min: float, overlap_min: float, near_m: float) -> pd.DataFrame:
-    """Colonne classe e motivo di ogni coppia con le soglie date (la regola D-2 e la griglia di sensibilita' usano questa)."""
+    """Colonne classe e motivo di ogni coppia con le soglie date (la regola D-12 e la griglia di sensibilita' usano questa).
+
+    Le soglie del distinto e della sezione vengono da config; name_min, overlap_min e near_m variano nella griglia.
+    """
     quota = minor_share(pairs, near_m)
-    similar, known, coincident = pairs["punteggio_nome"] >= name_min, quota.notna(), quota >= overlap_min
+    similar, known = pairs["punteggio_nome"] >= name_min, quota.notna()
+    duplicate = similar & (quota >= overlap_min)
+    apart = similar & (quota < config.DEDUP_DISTINCT_BELOW)
+    contained = ~similar & (quota >= config.DEDUP_SECTION_OVERLAP_MIN)
+    shared = pairs["parola_comune"]
     reasons = [
-        (similar & coincident, config.CLASSE_DUPLICATO, config.MOTIVO_DUPLICATO),
-        (similar & known & ~coincident, config.CLASSE_LIMBO, config.MOTIVO_NOME_SI_TRACCIATO_NO),
+        (duplicate, config.CLASSE_DUPLICATO, config.MOTIVO_DUPLICATO),
+        (apart, config.CLASSE_DISTINTO, config.MOTIVO_NOME_SI_TRACCIATO_NO),
+        (similar & known & ~duplicate & ~apart, config.CLASSE_LIMBO, config.MOTIVO_NOME_SI_TRACCIATO_INTERMEDIO),
         (similar & ~known, config.CLASSE_LIMBO, config.MOTIVO_NOME_SI_GEOMETRIA_ASSENTE),
-        (~similar & coincident, config.CLASSE_LIMBO, config.MOTIVO_TRACCIATO_SI_NOME_NO),
-        (~similar & known & ~coincident, config.CLASSE_DISTINTO, config.MOTIVO_DISTINTO),
+        (contained & shared, config.CLASSE_SEZIONE, config.MOTIVO_SEZIONE),
+        (contained & ~shared, config.CLASSE_LIMBO, config.MOTIVO_TRACCIATO_SI_NOME_NO),
+        (~similar & known & ~contained, config.CLASSE_DISTINTO, config.MOTIVO_DISTINTO),
         (~similar & ~known, config.CLASSE_DISTINTO, config.MOTIVO_DISTINTO_GEOMETRIA_ASSENTE),
     ]
     conditions = [condition.to_numpy() for condition, _, _ in reasons]
@@ -177,7 +228,7 @@ def coppie_frame(pairs: pd.DataFrame) -> pd.DataFrame:
         quota_minore=quota_minore, rapporto_lunghezza=shorter / longer,
     ).join(classify(pairs, config.DEDUP_NAME_MIN_SCORE, config.DEDUP_OVERLAP_MIN, near))
     frame = frame[(frame["punteggio_nome"] >= config.DEDUP_CANDIDATE_NAME_MIN) | (frame["quota_minore"] > 0)]
-    rank = frame["classe"].map({config.CLASSE_DUPLICATO: 0, config.CLASSE_LIMBO: 1, config.CLASSE_DISTINTO: 2})
+    rank = frame["classe"].map({config.CLASSE_DUPLICATO: 0, config.CLASSE_SEZIONE: 1, config.CLASSE_LIMBO: 2, config.CLASSE_DISTINTO: 3})
     frame = frame.assign(_rank=rank).sort_values(
         ["_rank", "quota_minore", "punteggio_nome"], ascending=[True, False, False], ignore_index=True
     )
@@ -203,7 +254,8 @@ def limbo_rows(coppie: pd.DataFrame) -> list[dict[str, str]]:
         km_b = _number(pair.lunghezza_b_m / 1000, config.DEDUP_DETAIL_DECIMALS, " km")
         detail = (
             f"{pair.nome_a} / {pair.nome_b}; punteggio nome {score} (soglia {config.DEDUP_NAME_MIN_SCORE}); "
-            f"quota minore {quota} (soglia {config.DEDUP_OVERLAP_MIN}, entro {config.DEDUP_NEAR_M} m); "
+            f"quota minore {quota} (duplicato da {config.DEDUP_OVERLAP_MIN}, distinto sotto {config.DEDUP_DISTINCT_BELOW}, "
+            f"entro {config.DEDUP_NEAR_M} m); "
             f"lunghezze {km_a} e {km_b}; geometria {pair.stato_a} e {pair.stato_b}"
         )
         rows.append(common.limbo_row(f"{pair.cammino_a}{config.DEDUP_PAIR_SEPARATOR}{pair.cammino_b}", pair.motivo, detail))
@@ -248,6 +300,58 @@ def gruppi_frame(catalogue: pd.DataFrame, lines: Lines, duplicates: pd.DataFrame
                 "lunghezza_m": length, "catena": chain,
             })
     return pd.DataFrame(rows, columns=list(config.DEDUP_GRUPPI_FIELDS))
+
+
+# --- Cammini unici: duplicato e sezione si fondono ---
+
+def _length_of(lengths: Mapping[str, float], cammino_id: str) -> float:
+    value = lengths.get(cammino_id, np.nan)
+    return value if pd.notna(value) else -1.0
+
+
+def _role(member: str, main: str, members: Sequence[str], edge_class: Mapping[frozenset, str]) -> str:
+    """Classe della coppia con il principale; se non e' accoppiato a lui (catena), duplicato se ha un arco duplicato, altrimenti sezione."""
+    if member == main:
+        return config.RUOLO_PRINCIPALE
+    classes = {edge_class[frozenset((member, other))] for other in members if frozenset((member, other)) in edge_class}
+    kind = edge_class.get(frozenset((member, main))) or (config.CLASSE_DUPLICATO if config.CLASSE_DUPLICATO in classes else config.CLASSE_SEZIONE)
+    return config.RUOLO_DUPLICATO if kind == config.CLASSE_DUPLICATO else config.RUOLO_SEZIONE
+
+
+def unique_frames(catalogue: pd.DataFrame, lengths: Mapping[str, float], merging: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(cammini_unici, membri): componenti connesse delle coppie duplicato e sezione; ogni cammino del catalogo compare una volta.
+
+    lengths: lunghezza della linea per cammino (assente se senza geometria). merging: coppie con cammino_a, cammino_b e classe.
+    Il principale e' il membro piu' lungo (a parita' il primo del catalogo), il nome del cammino unico e' il suo; alias sono
+    i nomi diversi degli altri membri. `catena` e' vero se non tutte le coppie dei membri sono archi. Stato: il migliore dei membri.
+    """
+    position = {cammino_id: n for n, cammino_id in enumerate(catalogue["cammino_id"])}
+    edge_class = {frozenset(pair[:2]): pair[2] for pair in zip(merging["cammino_a"], merging["cammino_b"], merging["classe"])}
+    linked = connected_groups(zip(merging["cammino_a"], merging["cammino_b"]))
+    in_group = {cammino_id for group in linked for cammino_id in group}
+    groups = [*linked, *([cammino_id] for cammino_id in catalogue["cammino_id"] if cammino_id not in in_group)]
+    ordered = sorted((sorted(group, key=position.__getitem__) for group in groups), key=lambda group: position[group[0]])
+    info = catalogue.set_index("cammino_id")
+    unici, membri = [], []
+    for number, members in enumerate(ordered, start=1):
+        unico_id = config.DEDUP_UNICO_ID_FORMAT.format(number=number)
+        main = max(members, key=lambda m: (_length_of(lengths, m), -position[m]))
+        aliases = [name for name in dict.fromkeys(info.loc[members, "nome"]) if name != info.at[main, "nome"]]
+        links = sum(1 for a in members for b in members if position[a] < position[b] and frozenset((a, b)) in edge_class)
+        unici.append({
+            "cammino_unico_id": unico_id, "nome": info.at[main, "nome"],
+            "fonti": config.DEDUP_LIST_SEPARATOR.join(sorted(set(info.loc[members, "fonte"]))),
+            "n_membri": len(members), "membri": config.DEDUP_LIST_SEPARATOR.join(members),
+            "alias": config.DEDUP_LIST_SEPARATOR.join(aliases),
+            "stato": min(info.loc[members, "stato_geometria"], key=config.DEDUP_STATO_ORDER.index),
+            "catena": links < len(members) * (len(members) - 1) // 2,
+        })
+        membri.extend(
+            {"cammino_unico_id": unico_id, "cammino_id": member, "fonte": info.at[member, "fonte"],
+             "nome": info.at[member, "nome"], "ruolo": _role(member, main, members, edge_class)}
+            for member in members
+        )
+    return pd.DataFrame(unici, columns=list(config.DEDUP_UNICI_FIELDS)), pd.DataFrame(membri, columns=list(config.DEDUP_MEMBRI_FIELDS))
 
 
 # --- Sensibilita' ---
@@ -350,15 +454,15 @@ def quasi_row(pair: pd.Series, lines: Lines, tratte_of: Mapping[str, pd.DataFram
 
 
 def quasi_frame(pairs: pd.DataFrame, lines: Lines, tratte: gpd.GeoDataFrame) -> pd.DataFrame:
-    """Coppie con nome simile e quota minore tra DEDUP_QUASI_OVERLAP_MIN e la soglia, con la diagnosi dei tratti lontani.
+    """Coppie con nome simile e quota minore tra DEDUP_QUASI_OVERLAP_MIN e DEDUP_QUASI_OVERLAP_MAX, con la diagnosi dei tratti lontani.
 
-    Si parte dalla tabella delle coppie (quote non arrotondate): il motivo "nome simile, tracciato diverso" e'
-    nome alla soglia, geometria presente e quota sotto la soglia.
+    Si parte dalla tabella delle coppie (quote non arrotondate). Non dipende dalla classe: con la regola D-12 molte di
+    queste coppie sono duplicati, ma il perche' del tratto lontano resta utile.
     """
     near = config.DEDUP_NEAR_M
     quota = minor_share(pairs, near)
-    reason = classify(pairs, config.DEDUP_NAME_MIN_SCORE, config.DEDUP_OVERLAP_MIN, near)["motivo"]
-    mask = (reason == config.MOTIVO_NOME_SI_TRACCIATO_NO) & (quota >= config.DEDUP_QUASI_OVERLAP_MIN)
+    similar = pairs["punteggio_nome"] >= config.DEDUP_NAME_MIN_SCORE
+    mask = similar & (quota >= config.DEDUP_QUASI_OVERLAP_MIN) & (quota < config.DEDUP_QUASI_OVERLAP_MAX)
     selected = pairs[mask].assign(quota_minore=quota[mask], a_minore=minor_is_a(pairs, near)[mask])
     selected = selected.sort_values(["quota_minore", "punteggio_nome"], ascending=False)
     walking = tratte[tratte["tipo"].isin(config.DEDUP_TIPI)]
@@ -395,9 +499,11 @@ def comuni_frame(selected: pd.DataFrame, lines: Lines, comuni: gpd.GeoDataFrame)
 
 
 def comuni_selection(coppie: pd.DataFrame, quasi: pd.DataFrame) -> pd.DataFrame:
-    """Le coppie duplicato e quelle quasi duplicate, con le colonne che servono a comuni_frame."""
-    duplicates = coppie[coppie["classe"] == config.CLASSE_DUPLICATO]
+    """Le coppie duplicato e quelle quasi duplicate, ciascuna una volta (se e' in entrambi gli insiemi resta quasi duplicata)."""
     columns = ["cammino_a", "cammino_b", "nome_a", "nome_b", "quota_minore"]
+    key = ["cammino_a", "cammino_b"]
+    in_quasi = pd.MultiIndex.from_frame(coppie[key]).isin(pd.MultiIndex.from_frame(quasi[key]))
+    duplicates = coppie[(coppie["classe"] == config.CLASSE_DUPLICATO) & ~in_quasi]
     near = quasi[columns].assign(classe=config.CLASSE_QUASI_DUPLICATO)
     return pd.concat([duplicates[[*columns, "classe"]], near], ignore_index=True)
 
@@ -405,12 +511,15 @@ def comuni_selection(coppie: pd.DataFrame, quasi: pd.DataFrame) -> pd.DataFrame:
 # --- Percorso completo ---
 
 def build_outputs(
-    catalogue: pd.DataFrame, tratte: gpd.GeoDataFrame, lines: Lines, comuni: gpd.GeoDataFrame
+    catalogue: pd.DataFrame, tratte: gpd.GeoDataFrame, lines: Lines, comuni: gpd.GeoDataFrame,
+    osm_ids: Collection[str] = frozenset(),
 ) -> dict[str, pd.DataFrame]:
-    """Tutte le uscite per nome (chiavi di config.DEDUP_FILES) a partire dai dati letti."""
-    pairs = pair_table(catalogue, lines, config.DEDUP_NEAR_VALUES_M)
+    """Tutte le uscite per nome (chiavi di config.DEDUP_FILES) a partire dai dati letti; osm_ids come in pair_table."""
+    pairs = pair_table(catalogue, lines, config.DEDUP_NEAR_VALUES_M, osm_ids)
     coppie = coppie_frame(pairs)
     quasi = quasi_frame(pairs, lines, tratte)
+    merging = coppie[coppie["classe"].isin([config.CLASSE_DUPLICATO, config.CLASSE_SEZIONE])]
+    unici, membri = unique_frames(catalogue, {cammino_id: line.length for cammino_id, line in lines.items()}, merging)
     return {
         "coppie": coppie,
         "limbo": pd.DataFrame(limbo_rows(coppie), columns=config.LIMBO_FIELDS),
@@ -418,17 +527,24 @@ def build_outputs(
         "sensibilita": sensitivity_frame(pairs),
         "quasi": quasi,
         "comuni": comuni_frame(comuni_selection(coppie, quasi), lines, comuni),
+        "unici": unici,
+        "membri": membri,
     }
 
 
 def run() -> None:
     catalogue = load_catalogue()
     tratte = common.read_tratte(config.DEDUP_FONTI)
+    substitutes = osm_substitute_tratte(catalogue["cammino_id"], tratte)
+    tratte = gpd.GeoDataFrame(pd.concat([tratte, substitutes], ignore_index=True), crs=config.CRS_WORK)
     lines = cammino_lines(tratte)
-    outputs = build_outputs(catalogue, tratte, lines, crossing.load_comuni())
+    osm_ids = frozenset(substitutes["cammino_id"])
+    outputs = build_outputs(catalogue, tratte, lines, crossing.load_comuni(), osm_ids)
     write_outputs(outputs)
     coppie = outputs["coppie"]
-    print(f"cammini {len(catalogue)}, con linea {len(lines)}; coppie candidate {len(coppie)}")
+    print(f"cammini {len(catalogue)}, con linea {len(lines)} (geometria OSM sostitutiva {len(osm_ids)}); coppie candidate {len(coppie)}")
     print(coppie["classe"].value_counts().to_string())
     print(f"limbo per motivo\n{coppie.loc[coppie['classe'] == config.CLASSE_LIMBO, 'motivo'].value_counts().to_string()}")
     print(f"gruppi {outputs['gruppi']['gruppo'].nunique()}, quasi duplicati {len(outputs['quasi'])}")
+    unici = outputs["unici"]
+    print(f"cammini distinti {len(unici)} (da {len(catalogue)}), con piu' membri {int((unici['n_membri'] > 1).sum())}, catene {int(unici['catena'].sum())}")

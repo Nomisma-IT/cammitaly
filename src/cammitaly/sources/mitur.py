@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 from cammitaly import config, files, http
 
 FIELDS = [
-    "nome", "slug", "regioni", "in_catalogo_dal", "decreto", "sito_web", "url_percorso",
+    "nome", "slug", "regioni", "distanza_km", "in_catalogo_dal", "decreto", "sito_web", "url_percorso",
     "pagina", "n_file", "tipi_file", "servizi", "nota",
 ]
 
@@ -51,7 +51,7 @@ def zip_file_name(url: str) -> str:
 
 
 class _ListingParser(HTMLParser):
-    """Raccoglie nome, regioni, nota di catalogo, icone dei servizi e link di ogni scheda (article.cr-card)."""
+    """Raccoglie nome, regioni, distanza, nota di catalogo, icone dei servizi e link di ogni scheda (article.cr-card)."""
 
     def __init__(self, source: str) -> None:
         super().__init__()
@@ -74,7 +74,7 @@ class _ListingParser(HTMLParser):
         classes = attributes.get("class", "").split()
         if tag == config.MITUR_CARD_TAG and config.MITUR_CARD_CLASS in classes:
             self._item = {
-                "nome": "", "regioni": "", "nota": "", "sito_web": "", "url_percorso": "",
+                "nome": "", "regioni": "", "distanza": "", "nota": "", "sito_web": "", "url_percorso": "",
                 "href_scartati": [], "n_disattivati": 0, "servizi": [],
             }
             self._capture = None
@@ -125,6 +125,8 @@ class _ListingParser(HTMLParser):
         if self._capture == "meta":
             if self._meta_kind == config.MITUR_LOCATION_LABEL:
                 self._item["regioni"] = text
+            elif self._meta_kind == config.MITUR_DISTANCE_LABEL:
+                self._item["distanza"] = text
         else:
             self._item[self._capture] = text
         self._capture = None
@@ -162,6 +164,15 @@ def parse_listing(markup: str, source: str = "") -> list[dict[str, Any]]:
     if not parser.items:
         raise http.FetchError(f"nessuna scheda in {source}: marcatura della pagina cambiata?")
     return parser.items
+
+
+def parse_distance_km(text: str) -> str:
+    """'1.050 km' -> '1050', '121,5 km' -> '121.5'; vuoto se la scheda non ha la distanza o non e' leggibile."""
+    found = re.match(config.MITUR_DISTANCE_PATTERN, text.strip())
+    if not found:
+        return ""
+    integer, decimals = found.group(1).replace(".", ""), found.group(2)
+    return f"{integer}.{decimals}" if decimals else integer
 
 
 def parse_catalog_note(note: str) -> tuple[str, str]:
@@ -313,7 +324,7 @@ def _csv_row(item: dict[str, Any]) -> dict[str, object]:
     n_files, kinds = _file_stats(item["slug"])
     regions = "|".join(r.strip() for r in item["regioni"].split(",") if r.strip())
     return {
-        "nome": item["nome"], "slug": item["slug"], "regioni": regions,
+        "nome": item["nome"], "slug": item["slug"], "regioni": regions, "distanza_km": parse_distance_km(item["distanza"]),
         "in_catalogo_dal": iso_date, "decreto": decree, "sito_web": item["sito_web"],
         "url_percorso": item["url_percorso"], "pagina": item["pagina"],
         "n_file": n_files, "tipi_file": kinds, "servizi": config.LIST_SEPARATOR.join(item["servizi"]),

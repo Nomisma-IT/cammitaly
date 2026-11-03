@@ -235,7 +235,7 @@ def test_build_all_cammini_rows_stato_and_limbo(tracks_dir: Path):
     put(tracks_dir, "ok", "0001_Tappa 1.gpx", "Tappa 1.gpx", gpx_track(line(11.0, 44.0)))
     put(tracks_dir, "solo-altro", "0001_Percorso.gpx", "Percorso.gpx", gpx_track(line(12.0, 44.0)))
     put(tracks_dir, "punti", "0001_wpt.gpx", "wpt.gpx", f'{GPX_HEAD}<wpt lat="44.0" lon="11.0"/></gpx>')
-    base = {"regioni": "Lazio", "sito_web": "http://x", "nota": ""}
+    base = {"regioni": "Lazio", "sito_web": "http://x", "nota": "", "distanza_km": "120.5"}
     cards = [
         {**base, "nome": "Ok", "slug": "ok", "url_percorso": "http://z/ok.zip"},
         {**base, "nome": "Solo altro", "slug": "solo-altro", "url_percorso": "http://z/a.zip"},
@@ -250,6 +250,7 @@ def test_build_all_cammini_rows_stato_and_limbo(tracks_dir: Path):
         "mitur:manca": config.STATO_ASSENTE, "mitur:senza-link": config.STATO_ASSENTE,
     }
     assert len(rows) == 5 and set(rows[0]) == set(config.CAMMINI_FIELDS)
+    assert rows[0]["lunghezza_dichiarata_km"] == "120.5"  # dalla distanza della scheda
     assert rows[0]["n_tappe_dichiarate"] == "" and rows[0]["n_tratte"] == 1 and rows[0]["lunghezza_m"] > 0
     motivi = {(r["oggetto"], r["motivo"]) for r in limbo}
     assert ("mitur:senza-link", config.MOTIVO_SENZA_PERCORSO) in motivi
@@ -301,7 +302,7 @@ def test_stage_longer_than_the_cap_becomes_altro_with_a_note(tracks_dir: Path, m
     assert by_name["Tappa 2"]["tipo"] == config.TIPO_ALTRO and by_name["Tappa 2"]["ordine"] is None
     assert result.n_too_long == 1
     frame = common.tratte_frame([t.record for t in result.tratte])
-    card = {"nome": "C", "slug": "c", "regioni": "", "sito_web": "", "nota": ""}
+    card = {"nome": "C", "slug": "c", "regioni": "", "sito_web": "", "nota": "", "distanza_km": ""}
     assert "oltre 3 km" in mitur.cammino_row(card, frame, result)["note"]
 
 

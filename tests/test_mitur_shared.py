@@ -11,7 +11,7 @@ PREFIX = config.MITUR_ZIP_PREFIX
 
 def _card(name: str, zip_name: str = "", scartati: list[str] | None = None) -> dict[str, Any]:
     return {
-        "nome": name, "url_percorso": PREFIX + zip_name if zip_name else "", "sito_web": "",
+        "nome": name, "url_percorso": PREFIX + zip_name if zip_name else "", "sito_web": "", "distanza": "",
         "href_scartati": scartati or [], "condiviso_con": [], "servizi": [],
     }
 

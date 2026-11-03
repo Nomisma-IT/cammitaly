@@ -83,6 +83,9 @@ MITUR_TITLE_TAG, MITUR_TITLE_CLASS = "h3", "cr-card__title"
 MITUR_META_CLASS = "cr-meta-line"
 MITUR_NOTE_CLASS = "cr-card__note"
 MITUR_LOCATION_LABEL = "Localizzazione"
+# Distanza della scheda in formato italiano: punto delle migliaia, virgola decimale ("1.050 km", "121,5 km")
+MITUR_DISTANCE_LABEL = "Distanza"
+MITUR_DISTANCE_PATTERN = r"^(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d+))?\s*km$"
 MITUR_SITE_LABEL = "Visita sito web"
 MITUR_DOWNLOAD_LABEL = "Scarica percorso"
 SLUG_STRIP_PATTERN = r"[^a-z0-9]+"
@@ -427,9 +430,14 @@ DEDUP_DIR = INTERIM_DIR / "dedup"
 DEDUP_FONTI = (CDI_FONTE, MITUR_FONTE)
 # La geometria di un cammino per la deduplica include tutte le tratte, anche bici e altro (decisione del committente)
 DEDUP_TIPI = (TIPO_TAPPA, TIPO_VARIANTE, TIPO_BICI, TIPO_ALTRO)
-# Regola del committente: due cammini sono lo stesso se i nomi sono simili E almeno DEDUP_OVERLAP_MIN del piu' corto
-# sta entro DEDUP_NEAR_M metri dall'altro. Una sola condizione vera = limbo (da risolvere su OSM)
-DEDUP_OVERLAP_MIN = 0.95
+# Regola del committente (D-12). Nomi simili (punteggio >= DEDUP_NAME_MIN_SCORE): almeno DEDUP_OVERLAP_MIN del piu'
+# corto entro DEDUP_NEAR_M metri dall'altro = lo stesso cammino (duplicato); meno di DEDUP_DISTINCT_BELOW (con entrambe
+# le geometrie) = cammini distinti; in mezzo = limbo "da verificare". Nome non simile: il piu' corto contenuto per almeno
+# DEDUP_SECTION_OVERLAP_MIN in un altro con almeno una parola in comune nella chiave del nome = sezione dell'intero
+# (si fonde); senza parole in comune la coppia resta in limbo. Con una geometria assente e nome simile: limbo
+DEDUP_OVERLAP_MIN = 0.70
+DEDUP_DISTINCT_BELOW = 0.50
+DEDUP_SECTION_OVERLAP_MIN = 0.95
 DEDUP_NEAR_M = 50
 # Soglia sul punteggio dei nomi (token_set_ratio sulle chiavi, 0-100). Sui 34.453 confronti dei dati del 3 novembre
 # 2026 le coppie con punteggio 100 sono 76 e nessuna sta tra 88 e 100: la piu' alta sotto e' 87,5 ("Normanna" /
@@ -444,11 +452,13 @@ DEDUP_SENS_NEAR_M = (25, 50, 100)
 DEDUP_NEAR_VALUES_M = tuple(sorted({DEDUP_NEAR_M, *DEDUP_SENS_NEAR_M}))
 # coppie.csv tiene i candidati: nome almeno cosi' simile (la soglia piu' bassa della griglia) oppure tracciati che si toccano
 DEDUP_CANDIDATE_NAME_MIN = min(DEDUP_SENS_NAME_SCORES)
-CLASSE_DUPLICATO, CLASSE_LIMBO, CLASSE_DISTINTO = "duplicato", "limbo", "distinto"
+CLASSE_DUPLICATO, CLASSE_SEZIONE, CLASSE_LIMBO, CLASSE_DISTINTO = "duplicato", "sezione", "limbo", "distinto"
 CLASSE_QUASI_DUPLICATO = "quasi duplicato"
 MOTIVO_DUPLICATO = "nome simile, tracciato coincidente"
-MOTIVO_NOME_SI_TRACCIATO_NO = "nome simile, tracciato diverso"
-MOTIVO_TRACCIATO_SI_NOME_NO = "tracciato coincidente, nome diverso"
+MOTIVO_NOME_SI_TRACCIATO_NO = "nome simile, tracciato diverso"  # classe distinto
+MOTIVO_NOME_SI_TRACCIATO_INTERMEDIO = "nome simile, sovrapposizione da verificare"  # classe limbo
+MOTIVO_SEZIONE = "tracciato contenuto in un altro, parola in comune nel nome"
+MOTIVO_TRACCIATO_SI_NOME_NO = "tracciato coincidente, nome diverso"  # nessuna parola in comune
 MOTIVO_NOME_SI_GEOMETRIA_ASSENTE = "nome simile, geometria assente"
 MOTIVO_DISTINTO = "nome e tracciato diversi"
 MOTIVO_DISTINTO_GEOMETRIA_ASSENTE = "nome diverso, geometria assente"
@@ -456,19 +466,32 @@ DEDUP_PAIR_SEPARATOR = "|"  # oggetto del limbo: "cammino_a|cammino_b"
 DEDUP_FILES = {
     "coppie": "coppie.csv", "limbo": "limbo_dedup.csv", "gruppi": "gruppi.csv",
     "sensibilita": "sensibilita.csv", "quasi": "quasi_duplicati.csv", "comuni": "confronto_comuni.csv",
+    "unici": "cammini_unici.csv", "membri": "membri.csv",
 }
 DEDUP_COPPIE_FIELDS = (
     "cammino_a", "cammino_b", "fonte_a", "fonte_b", "nome_a", "nome_b", "punteggio_nome", "punteggio_nome_sort",
-    "nome_contenuto", "quota_a_in_b", "quota_b_in_a", "quota_minore", "lunghezza_a_m", "lunghezza_b_m",
-    "rapporto_lunghezza", "stato_a", "stato_b", "classe", "motivo",
+    "nome_contenuto", "parola_comune", "quota_a_in_b", "quota_b_in_a", "quota_minore", "lunghezza_a_m", "lunghezza_b_m",
+    "rapporto_lunghezza", "stato_a", "stato_b", "geometria_osm", "classe", "motivo",
 )
+# Cammini senza tracce proprie: la deduplica usa la geometria OSM abbinata (osm_match.py), se c'e'.
+# La colonna geometria_osm di coppie.csv dice quale lato della coppia la usa
+DEDUP_OSM_SIDE_A, DEDUP_OSM_SIDE_B, DEDUP_OSM_SIDE_BOTH, DEDUP_OSM_SIDE_NONE = "a", "b", "entrambi", ""
+# Tabella dei cammini distinti (componenti connesse di duplicato e sezione) e dei loro membri
+DEDUP_UNICO_ID_FORMAT = "u{number:03d}"
+DEDUP_UNICI_FIELDS = ("cammino_unico_id", "nome", "fonti", "n_membri", "membri", "alias", "stato", "catena")
+DEDUP_MEMBRI_FIELDS = ("cammino_unico_id", "cammino_id", "fonte", "nome", "ruolo")
+RUOLO_PRINCIPALE, RUOLO_DUPLICATO, RUOLO_SEZIONE = "principale", "duplicato", "sezione"
+DEDUP_LIST_SEPARATOR = "|"
+# Stato del cammino unico: il migliore tra quelli dei membri
+DEDUP_STATO_ORDER = (STATO_OK, STATO_PARZIALE, STATO_ASSENTE)
 DEDUP_GRUPPI_FIELDS = ("gruppo", "cammino_id", "fonte", "nome", "stato_geometria", "lunghezza_m", "catena")
 DEDUP_SENSIBILITA_FIELDS = (
     "soglia_nome", "soglia_quota", "distanza_m", "n_duplicato", "n_limbo", "n_distinto",
     "n_nome_100", "n_nome_100_tracciato_diverso", "n_nome_100_geometria_assente",
 )
-# Coppie quasi duplicate: nome come per i duplicati, quota minore da questo valore alla soglia DEDUP_OVERLAP_MIN
+# Coppie quasi duplicate (solo diagnosi dei tratti lontani): nome come per i duplicati, quota minore da questo valore a DEDUP_QUASI_OVERLAP_MAX
 DEDUP_QUASI_OVERLAP_MIN = 0.5
+DEDUP_QUASI_OVERLAP_MAX = 0.95  # la vecchia soglia D-2: oltre, il corto sta nell'altro per intero
 DEDUP_QUASI_FIELDS = (
     "cammino_a", "cammino_b", "nome_a", "nome_b", "punteggio_nome", "quota_minore", "cammino_corto",
     "lunghezza_a_m", "lunghezza_b_m", "n_segmenti_lontani", "km_lontani", "km_segmento_max", "distanza_max_m",
@@ -501,6 +524,50 @@ DEDUP_COMUNI_FIELDS = (
     "cammino_a", "cammino_b", "nome_a", "nome_b", "classe", "quota_minore",
     "n_a", "n_b", "n_entrambi", "n_unione", "jaccard",
 )
+
+# --- Abbinamento con OSM (osm_match.py) ---
+# Ogni cammino del catalogo (cdi e MiTur) si confronta con le relazioni di percorso di OSM (cammini_osm.csv,
+# tratte_osm.gpkg). Nome simile come nella deduplica; per i cammini con tracce anche la geometria, per quelli
+# senza tracce le regioni dichiarate e la lunghezza dichiarata
+OSM_MATCH_DIR = INTERIM_DIR / "osm_match"
+OSM_MATCH_FILES = {"abbinamenti": "abbinamenti.csv", "geometrie": "geometrie_osm.gpkg"}
+OSM_MATCH_LAYER = "osm_cammini"
+OSM_MATCH_NAME_MIN_SCORE = DEDUP_NAME_MIN_SCORE
+OSM_MATCH_NEAR_M = DEDUP_NEAR_M
+# Con tracce: abbinata se il nome e' simile e almeno questa quota del catalogo sta sulla relazione o della relazione
+# sul catalogo (la seconda accoglie le tappe OSM di un cammino lungo)
+OSM_MATCH_SHARE_MIN = 0.70
+# Solo geometria (non e' un abbinamento): nome diverso ma entrambe le quote almeno a questo valore
+OSM_MATCH_GEOMETRY_ONLY_MIN = 0.95
+# Annidamento: una relazione che sta per almeno questa quota dentro un'altra piu' lunga abbinata si scarta (resta la piu' esterna)
+OSM_MATCH_NESTED_MIN = 0.95
+# Senza tracce: la relazione deve stare per almeno questa quota della sua lunghezza nelle regioni dichiarate
+OSM_MATCH_REGION_SHARE_MIN = 0.80
+# Senza tracce, con lunghezza dichiarata: lunghezza OSM / dichiarata in questo intervallo (lo stesso del controllo
+# delle tratte camminiditalia)
+OSM_MATCH_LENGTH_RATIO_MIN = CDI_LENGTH_RATIO_MIN
+OSM_MATCH_LENGTH_RATIO_MAX = CDI_LENGTH_RATIO_MAX
+# Senza tracce, senza lunghezza dichiarata: il gruppo OSM deve essere lungo almeno cosi'. E' la distanza dichiarata piu'
+# corta del catalogo (dati del 3 novembre 2026: 262 cammini su 263 la dichiarano, minimo 5 km, 1o percentile 9,6 km):
+# nessun cammino del catalogo e' piu' corto, mentre i falsi positivi visti erano una ferrata di 0,3 km e un sentiero di 2,3 km
+OSM_MATCH_MIN_LENGTH_M = 5000
+# Senza tracce: nome simile solo se le chiavi hanno le stesse parole, o se quella contenuta nell'altra ha almeno
+# tante parole. Una sola parola contenuta ("maria", "pollino") da' 100 con token_set_ratio a ogni nome che la usa
+OSM_MATCH_CONTAINED_MIN_TOKENS = 2
+# Senza tracce: relazioni piu' vicine di cosi' sono tappe dello stesso percorso (si uniscono), oltre sono candidati distinti
+OSM_MATCH_STAGE_GAP_M = 500
+# Lettura delle geometrie OSM: tratte per blocco (la geometria intera del GeoPackage non sta in memoria)
+OSM_MATCH_CHUNK_ROWS = 2000
+# Le linee del catalogo si spezzano in pezzi di al massimo tanti vertici per l'indice spaziale: la distanza di un punto
+# da un pezzo corto costa poco, da una linea di decine di migliaia di vertici molto
+OSM_MATCH_PIECE_VERTICES = 64
+ESITO_ABBINATO, ESITO_AMBIGUO, ESITO_SOLO_GEOMETRIA, ESITO_NESSUNO = "abbinato", "ambiguo", "solo geometria", "nessuno"
+OSM_MATCH_FIELDS = (
+    "cammino_id", "fonte", "nome", "stato_geometria", "esito", "osm_ids", "n_relazioni", "punteggio_nome",
+    "quota_catalogo_in_osm", "quota_osm_in_catalogo", "lunghezza_osm_m", "lunghezza_catalogo_m",
+    "lunghezza_dichiarata_km", "rapporto_dichiarata", "quota_nelle_regioni", "pellegrinaggio_osm", "nota",
+)
+OSM_MATCH_GEOMETRY_FIELDS = ("cammino_id", "osm_ids")
 
 # --- Calibrazione della distanza d ---
 CALIBRATION_DIR = INTERIM_DIR / "calibrazione"
