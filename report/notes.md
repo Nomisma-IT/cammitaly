@@ -216,3 +216,89 @@ Comando: `python -m cammitaly calibra` (2,3 minuti, picco di memoria 562 MB). Un
 - Un cammino (`cdi:32786`, Via della Lana e della Seta) non ha linea: le sue 4 coppie non si misurano.
 - La regola `nome_parziale` scarta anche corrispondenze giuste (per esempio Ortona al posto di Ortona dei Marsi nelle regioni elencate); è prudente e costa 66 nomi su 5320.
 - Le coppie cdi / MiTur sono provvisorie (nome, sovrapposizione e lunghezza), non la deduplica del passo successivo.
+
+## Deduplicazione: test della regola (3 novembre 2026)
+
+Comando: `python -m cammitaly dedup` (da 9 a 13 minuti secondo il carico della macchina, picco di memoria 695 MB). Applica ai cammini di camminiditalia.org e del Catalogo MiTur la regola del committente: due cammini sono lo stesso se i nomi sono simili e almeno il 95% del più corto sta entro 50 m dall'altro; con una sola condizione vera la coppia è in limbo (da risolvere su OSM). È un test sui dati: le soglie sono quelle del committente e non cambiano. La logica è in `src/cammitaly/dedup.py`, le primitive condivise (nomi, quota di una linea vicina a un'altra) in `src/cammitaly/matching.py`, i risultati in `data/interim/dedup/`: `coppie.csv`, `limbo_dedup.csv`, `gruppi.csv`, `sensibilita.csv`, `quasi_duplicati.csv`, `confronto_comuni.csv`.
+
+**Metodo.**
+- Universo: 263 cammini (cdi 136, MiTur 127) e 34.453 coppie non ordinate, anche dentro la stessa fonte. 232 cammini hanno una geometria (cdi 134, MiTur 98), 31 no (cdi 2, MiTur 29).
+- Geometria di un cammino: unione di tutte le sue tratte (tappa, variante, bici, altro; le bici restano per scelta del committente), con le parti riunite dove si toccano. Le lunghezze (56.776 km in tutto) vengono dalla geometria, non dai CSV: in `cammini_mitur.csv` `lunghezza_m` conta solo tappe e varianti (Anello Cimino vale 0 ma ha una tratta `altro`).
+- Nome: nome normalizzato senza articoli, preposizioni, "cammino/cammini", "via/vie", "sentiero", "percorso", "itinerario", "strada" (elenco in `config.NAME_GENERIC_WORDS`; se non resta nulla si tiene il nome intero). I santi restano nella chiave: "Cammino di San Carlo" e "Cammino di Carlo Magno" sono nomi diversi. Punteggio: `token_set_ratio` di rapidfuzz tra le due chiavi, 0-100, che vale 100 anche quando una chiave è contenuta nell'altra ("francigena" e "francigena sud"); `punteggio_nome_sort` (`token_sort_ratio` sulle stesse chiavi) è solo informativo e `nome_contenuto` segna i punteggi 100 dovuti a inclusione.
+- Soglia sul nome: 95. Distribuzione dei punteggi sulle 34.453 coppie: 76 valgono 100, nessuna sta tra 90 e 100, 45 tra 80 e 90, 125 tra 70 e 80, 405 tra 60 e 70. La più alta sotto 100 è 87,5 ("Normanna" e "Normanno"), poi 87,0 ("Santo Marino" e "San Martino"). Ogni soglia tra 87,6 e 100 dà lo stesso insieme; tra 65 e 88 ci sono nomi di cammini diversi con una parola in comune o un refuso (esempi: "Colline Novaresi Sesia" e "Colline Novaresi Agogna" 84,2).
+- Quota: si campiona la linea più corta (a parità esatta di lunghezza vale la più bassa delle due quote, quindi il risultato non dipende dall'ordine della coppia) ogni 10 m; la quota è la parte di lunghezza dei punti entro 50 m dall'altra linea. Si interroga un indice spaziale sulle parti della linea lunga (non si bufferizza mai) e solo per le coppie i cui riquadri, allargati di 100 m, si toccano (1589 coppie su 34.453; per le altre la quota è 0); se una delle due non ha geometria la quota è vuota. Le stesse quote si calcolano a 25 e a 100 m per la griglia di sensibilità.
+- Classi: duplicato = nome >= 95 e quota minore >= 0,95; limbo = una sola delle due condizioni (motivi: nome simile e tracciato diverso; tracciato coincidente e nome diverso; nome simile e geometria assente); distinto negli altri casi. `coppie.csv` tiene le 847 coppie candidate (nome >= 80 oppure quota minore > 0).
+- Quasi duplicati: coppie con nome >= 95 e quota minore tra 0,5 e 0,95 (16). Per ciascuna, i tratti consecutivi del cammino più corto a più di 50 m dall'altro: numero, km totali, km del più lungo, distanza massima e tratta che contiene il più lungo. Diagnosi in parole, regole in quest'ordine: distanza massima <= 150 m, sfasamento sistematico; più della metà dei km lontani in tratte variante, bici o altro, tracciato in una sola fonte; distanza massima > 5 km, tappe mancanti in una fonte; altrimenti versione diversa del percorso su alcuni km. Le soglie 150 m e 5 km stanno in `config.py`.
+- Comuni: per i duplicati e i quasi duplicati, i comuni a distanza <= 100 m dalla linea di ciascuna versione (la logica di `crossing.py`, con tutte le tratte comprese le bici).
+
+**Risultati con le soglie del committente.** Sulle 34.453 coppie: duplicato 25, limbo 57, distinto 34.371.
+- Duplicati: 24 tra fonti e 1 dentro cdi (Via/Cammino di San Francesco, Assisi-Rieti-Roma e Roma-Rieti-Assisi: stesso tracciato nei due sensi). Formano 23 gruppi con 48 cammini: 22 coppie e una catena, la Via Francigena MiTur (3079 km) con tre cammini cdi che le stanno dentro ("nel Sud" 949 km, "Colle San Bernardo - Roma" 1057 km, "Direttrice Micaelica" 179 km); le tre cdi tra loro non sono duplicati. Dopo la deduplica i cammini sono 263 - 48 + 23 = 238 (31 senza geometria). Stato della geometria: ok/ok 15, ok/parziale 8, parziale/parziale 2.
+- Lunghezza dei duplicati (rapporto lunghezza minore / maggiore): mediana 0,889; 9 coppie sotto 0,8, di cui 6 sotto 0,5 (il tracciato corto è contenuto in uno molto più lungo, per esempio Via Romea Nonantolana 92,8 e 200,5 km, Alta Via delle Grazie 263,6 e 622,1 km). In 11 coppie su 25 entrambe le quote sono >= 0,95; nelle altre 14 vale solo quella del cammino più corto.
+- Punteggio 100: 76 coppie, 25 duplicato, 38 nome simile e tracciato diverso, 13 nome simile e geometria assente. 44 dei 76 sono dovuti a inclusione (8 duplicato, 36 limbo).
+- Limbo, nome simile e tracciato diverso (38): quota minore tra 0,5 e 0,95 in 16 coppie (sono i quasi duplicati), tra 0,1 e 0,5 in 3, sotto 0,1 in 19; 25 su 38 per inclusione. Le 19 sotto 0,1 sono in prevalenza percorsi diversi dello stesso gruppo di nomi (per esempio Cammino di Assisi MiTur con quattro cammini cdi, Via Lauretana MiTur con il percorso cdi Siena, Cortona, Assisi, Cammino di Oropa Orientale, Via Francigena MiTur con Magna Via Francigena e con Via Francigena Renana).
+- Limbo, nome simile e geometria assente (13): in ogni coppia manca la geometria a uno solo dei due; i cammini senza geometria sono 9 in tutto (il MiTur Cammino di San Cristoforo compare in 3 coppie). Per fonti: 9 coppie cdi-MiTur (geometria nel cdi, assente nel MiTur), 3 MiTur-MiTur, 1 cdi-cdi.
+- Limbo, tracciato coincidente e nome diverso (6): punteggi 84,2, 69,2, 69,2, 66,7, 58,1, 58,1; quota minore 1,0000, 1,0000, 0,9933, 0,9753, 0,9925, 0,9925. Sono tracciati contenuti in uno più lungo con un altro nome (Colline Novaresi, Sesia contiene Cammino Devozionale; Via di Francesco da Firenze a La Verna in Via di Francesco in Toscana; Via Lauretana Siena, Cortona, Assisi con Via Lauretana in Toscana; Via Peuceta con Cammino Materano; i due sensi Assisi-Rieti-Roma con Via di Francesco tratto umbro).
+- Dentro la stessa fonte: cdi 1 duplicato e 3 limbo (Colline Novaresi; "Cammino dei Forti" con "Le Strade dei Forti", quota 0; Cammino dei Briganti con Grande Cammino dei Briganti, senza geometria); MiTur nessun duplicato e 10 limbo (7 con tracciato diverso, quota massima 0,1614; 3 senza geometria).
+- Le 23 coppie provvisorie della calibrazione (esperimento C) cadono così: 15 duplicato e 8 limbo (nome simile e tracciato diverso, quota minore da 0,8183 a 0,9463: Via Fabaria 0,9072; Magna Via Francigena 0,8802; Cammino di San Francesco da Rimini a La Verna 0,8839; Cammino di San Giacomo in Sicilia 0,9012; Cammino Grande di Celestino 0,9431; Cammino di San Benedetto 0,9463; Cammino di San Filippo Neri 0,8183; Cammino dei Cappuccini 0,8648). Dei 15 duplicati, 9 hanno rapporto di lunghezza cdi / MiTur tra 0,9 e 1,1.
+
+**Sensibilità (`sensibilita.csv`, nome >= 95).** Duplicati e limbo per quota minima e distanza:
+
+| quota minima | 25 m | 50 m | 100 m |
+|---|---|---|---|
+| 0,80 | 35 / 55 | 35 / 56 | 35 / 56 |
+| 0,85 | 32 / 58 | 33 / 58 | 33 / 58 |
+| 0,90 | 29 / 56 | 30 / 55 | 30 / 57 |
+| 0,95 | 25 / 57 | 25 / 57 | 27 / 56 |
+
+- Soglia sul nome con quota 0,95 e 50 m: 25 duplicati con soglia 85, 90 e 95; 26 con soglia 80 (la coppia in più è Colline Novaresi Sesia e Cammino Devozionale, punteggio 84,2, due cammini distinti con il tracciato contenuto); i limbo sono 57 con soglia 95 e 90, 60 con 85 e 100 con 80.
+- Coppie con punteggio 100 che non passano la quota (con geometria, a 50 m): 28 con quota 0,80, 30 con 0,85, 33 con 0,90, 38 con 0,95; altre 13 non hanno la geometria.
+- Con quota 0,80 si aggiungono 10 duplicati rispetto a 0,95 (nome >= 95, 50 m): San Benedetto, Grande di Celestino, Via Normanna con la Francigena Normanna da Palermo a Messina, Via Fabaria, San Giacomo in Sicilia, Rimini-La Verna, Magna Via Francigena, Cappuccini, Cammino del Salento Via dei Borghi, San Filippo Neri; 2 di queste hanno il nome per inclusione.
+
+**Quasi duplicati (`quasi_duplicati.csv`, 16 coppie, quota minore 0,5-0,95).** Km lontani oltre 50 m dall'altro cammino, 769 km in tutto (mediana 28 km per coppia). In tabella: quota minore; numero di tratti lontani; km totali; km del più lungo; distanza massima; diagnosi.
+
+| Cammino (cdi con MiTur) | quota | tratti | km | km max | dist. max (m) | diagnosi |
+|---|---|---|---|---|---|---|
+| San Benedetto | 0,946 | 15 | 16,2 | 5,0 | 1514 | versione diversa |
+| Grande di Celestino | 0,943 | 22 | 12,2 | 6,8 | 667 | versione diversa |
+| Via Normanna | 0,929 | 4 | 30,3 | 14,6 | 10.887 | tappe mancanti |
+| Via Fabaria | 0,907 | 19 | 47,0 | 17,4 | 6049 | variante (42,1 km in tratte variante) |
+| San Giacomo in Sicilia | 0,901 | 36 | 12,4 | 3,8 | 1411 | versione diversa |
+| San Francesco da Rimini a La Verna | 0,884 | 2 | 17,0 | 10,1 | 4153 | variante (Tappa 05b, direttrice per l'inverno) |
+| Magna Via Francigena | 0,880 | 8 | 27,4 | 17,9 | 3601 | variante (Tappa 05A) |
+| Cappuccini | 0,865 | 84 | 49,4 | 7,0 | 1381 | versione diversa |
+| Cammino del Salento, Via dei Borghi | 0,828 | 21 | 23,0 | 7,6 | 2220 | versione diversa |
+| San Filippo Neri | 0,818 | 18 | 21,2 | 12,4 | 2478 | altro tracciato (traccia "a piedi (rev_ago23)") |
+| Protomartiri Francescani | 0,775 | 16 | 23,4 | 8,3 | 1576 | versione diversa |
+| San Francesco di Paola | 0,771 | 4 | 74,3 | 28,2 | 32.193 | tappe mancanti |
+| Via Lauretana Roma, Assisi, Loreto | 0,769 | 27 | 46,6 | 9,8 | 3333 | versione diversa |
+| Cammino del Salento, Via del Mare | 0,741 | 33 | 29,5 | 7,6 | 2220 | versione diversa |
+| Romea Strata | 0,718 | 128 | 300,0 | 45,8 | 9693 | altro tracciato (i 300 km lontani sono tutti in tratte di tipo altro) |
+| Via Francisca del Lucomagno | 0,710 | 19 | 39,6 | 10,2 | 1633 | altro tracciato (tratte di tipo altro) |
+
+Conteggio delle diagnosi: versione diversa del percorso 8, variante o altro tracciato in una sola fonte 6, tappe mancanti 2, sfasamento sistematico 0. Nessuna coppia ha i punti lontani tutti entro 150 m.
+
+**Confronto dei comuni a d = 100 m (`confronto_comuni.csv`).**
+- Duplicati (25 coppie): indice di Jaccard mediano 1,000, medio 0,868; 13 coppie con lo stesso insieme di comuni, 18 con Jaccard >= 0,9. In tutte e 25 l'insieme del cammino più corto è contenuto in quello del più lungo: la somma dei comuni della versione più ampia (1527) è uguale a quella dell'unione (1527). Senza le tre coppie con la Via Francigena MiTur (Jaccard 0,063, 0,331, 0,408: 23, 120 e 148 comuni contro 363) restano 22 coppie con Jaccard medio 0,950, somma delle versioni più ampie 438 e unione 438. Le altre coppie sotto 0,9: Via Romea Nonantolana 0,667 (12 e 18 comuni), Alta Via delle Grazie 0,825 (47 e 57), Via dei Monti o de Pontremolo 0,857 (6 e 7), Via dei Frati 0,882 (15 e 17).
+- Quasi duplicati (16 coppie): Jaccard mediano 0,900, medio 0,869; 3 coppie con lo stesso insieme, 9 con Jaccard >= 0,9; l'unione supera la versione più ampia in 4 coppie (620 comuni contro 601 sommando le versioni più ampie, 19 in più).
+
+**Limiti.**
+- La quota misura solo quanto del cammino più corto sta sull'altro; non vede le tappe in più del più lungo. Per i duplicati con rapporto di lunghezza sotto 0,8 (9 su 25) la regola non dice se il cammino più lungo è lo stesso con più tappe o varianti, o un percorso più ampio che contiene il corto.
+- Una parte che contiene un'altra è duplicato anche quando sono cammini distinti: le tre cdi dentro la Via Francigena MiTur formano una catena, non coppie complete.
+- Il campionamento ogni 10 m è lo stesso della calibrazione (errore stimato sotto l'1%, non rimisurato qui); le quote a 25, 50 e 100 m usano gli stessi punti.
+- La diagnosi dei quasi duplicati è una regola in parole sui numeri (distanza massima, tipo delle tratte), non una verifica sul terreno; il tipo delle tratte viene dai builder (per esempio i 300 km lontani della Romea Strata MiTur sono tutti in tratte di tipo `altro`).
+- 13 coppie nome simile e geometria assente non si misurano: in 9 cammini manca la geometria.
+
+## Etichette (3 novembre 2026)
+
+Comando: `python -m cammitaly tag` (logica in `src/cammitaly/tags.py`; riscrive `data/interim/etichette_tratte.csv`, `etichette_cammini.csv` e `controllo_religioso.csv`). Ogni tratta e ogni cammino delle tre fonti riceve due etichette: il mezzo (a piedi, in bici, entrambi) e il carattere religioso (sì/no).
+
+**Mezzo.** È quello con cui la fonte pubblica la traccia: a piedi se è presentata come tappa a piedi, in bici se è presentata per le biciclette, entrambi se è presentata per chi cammina e per chi pedala; quando due indicazioni divergono si sceglie la più inclusiva.
+- Tratte (38.544): 33 per entrambi (5 cdi, 2 MiTur, 26 OSM) e 88 in bici (82 MiTur, 6 OSM); le altre a piedi.
+- cdi: le 5 tratte per entrambi lo sono perché la traccia Webmapp indica anche un'attività in bici (Romea Imperiale e Cammino Balteo).
+- MiTur: 82 tratte in bici; 2 (Cammino di Santu Jacu) sono dichiarate per camminanti e ciclisti; 7 tappe su percorsi ciclopedonali restano a piedi perché pubblicate come tappe a piedi.
+- OSM: una relazione a piedi è per entrambi se appartiene a una rete ciclabile (lcn, rcn, ncn, icn) o se il nome parla di bici (ciclovia, variante per ciclisti, MTB, e-bike).
+- Cammini: il mezzo sintetizza quello delle tratte: se tutte sono a piedi il cammino è a piedi, se tutte sono in bici è in bici, in ogni altra combinazione è per entrambi. Ne risultano 2 cammini cdi, 11 MiTur e 25 OSM per entrambi, e 5 cammini OSM in bici.
+
+**Carattere religioso.** Vale sì per i 127 cammini del catalogo MiTur, per i 45 cammini cdi con tema "spirituale" (nella scheda o nello strato Webmapp) e per i 562 cammini OSM con il tag pilgrimage positivo o con un valore nominato; vale no negli altri casi, e un cammino risulta religioso se almeno una fonte lo indica. I cammini senza indicazione ma con un nome religioso (12 cdi, 1.064 OSM, elenco provvisorio) sono in `controllo_religioso.csv`.
+
+**Altri attributi.** Tipologia e portata (valore di cdi; Webmapp completa solo la tipologia quando cdi non la indica), tema e stagione (cdi e Webmapp, unite), credenziale e segnaletica (MiTur) e data di ingresso in catalogo (MiTur).

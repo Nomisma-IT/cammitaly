@@ -1,4 +1,4 @@
-from cammitaly.sources.camminiditalia import parse_tappa_text
+from cammitaly.sources.camminiditalia import _cammino_row, parse_tappa_text
 
 FULL = (
     '<h2><strong>TAPPA 01: Da Piazza S.Pietro (Roma) ad Albano Laziale\xa0</strong></h2>\n'
@@ -27,3 +27,14 @@ def test_stage_with_distance_only() -> None:
 def test_decimal_comma_and_html_entities() -> None:
     parsed = parse_tappa_text(DECIMAL_COMMA)
     assert parsed == {"partenza": "Sant’Angelo", "arrivo": "Cassino", "distanza_km": "18.4"}
+
+
+def test_cammino_row_carries_tema_and_stagione_as_pipe_lists() -> None:
+    item = {
+        "id": 1, "slug": "x", "title": {"rendered": "X"}, "link": "u", "modified": "m", "class_list": [],
+        "acf": {"scheda_tecnica": {"tema": ["storico", "spirituale"], "stagione_ideale": ["estate"]}},
+    }
+    row = _cammino_row(item)
+    assert (row["tema"], row["stagione"]) == ("storico|spirituale", "estate")
+    bare = _cammino_row({**item, "acf": {"scheda_tecnica": {}}})
+    assert (bare["tema"], bare["stagione"]) == ("", "")

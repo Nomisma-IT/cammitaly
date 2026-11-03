@@ -12,7 +12,7 @@ PREFIX = config.MITUR_ZIP_PREFIX
 def _card(name: str, zip_name: str = "", scartati: list[str] | None = None) -> dict[str, Any]:
     return {
         "nome": name, "url_percorso": PREFIX + zip_name if zip_name else "", "sito_web": "",
-        "href_scartati": scartati or [], "condiviso_con": [],
+        "href_scartati": scartati or [], "condiviso_con": [], "servizi": [],
     }
 
 
@@ -63,6 +63,16 @@ def test_csv_row_carries_the_note_column(tmp_path: pytest.TempPathFactory, monke
     row = mitur._csv_row(card)
     assert set(row) == set(mitur.FIELDS)
     assert row["nota"] == "percorso su host esterno: gigamail.example.org"
+
+
+def test_csv_row_joins_the_service_icons_with_the_list_separator(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "MITUR_TRACKS_DIR", tmp_path / "tracce")  # type: ignore[operator]
+    base = {"nota": "", "regioni": "Lazio", "pagina": 1}
+    with_icons = _card("Via Uno") | base | {"servizi": ["Segnaletica", "Credenziali"]}
+    without = _card("Via Due") | base
+    _resolved([with_icons, without])
+    assert mitur._csv_row(with_icons)["servizi"] == "Segnaletica|Credenziali"
+    assert mitur._csv_row(without)["servizi"] == ""
 
 
 P_ALL = sorted(config.MITUR_PAGES_DIR.glob(config.MITUR_PAGES_GLOB))

@@ -20,7 +20,7 @@ from rapidfuzz import fuzz, process
 from shapely.geometry import LineString, MultiLineString
 from shapely.geometry.base import BaseGeometry
 
-from cammitaly import config, crossing
+from cammitaly import config, crossing, matching
 from cammitaly.geometry import common
 from cammitaly.geometry.common import normalize_name
 
@@ -32,8 +32,7 @@ Degradation = Callable[[Sequence[BaseGeometry]], list[BaseGeometry]]
 
 
 def _write(frame: pd.DataFrame, name: str) -> None:
-    config.CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(config.CALIBRATION_DIR / name, index=False, encoding="utf-8", lineterminator="\n")
+    common.write_frame(frame, config.CALIBRATION_DIR / name)
 
 
 def share_within(values: pd.Series, d: float) -> float:
@@ -477,27 +476,10 @@ def cammino_spacing(tratte: pd.DataFrame) -> pd.Series:
     return walking["lunghezza_m"].groupby(walking["cammino_id"]).sum() / segments.groupby(walking["cammino_id"]).sum()
 
 
-def sample_points(geom: BaseGeometry, step_m: float) -> tuple[np.ndarray, np.ndarray]:
-    """Punti equidistanti (circa step_m) lungo ogni parte della linea, col peso in metri di ciascuno."""
-    points, weights = [], []
-    for part in shapely.get_parts(geom):
-        count = max(2, int(np.ceil(part.length / step_m)) + 1)
-        points.append(shapely.line_interpolate_point(part, np.linspace(0, part.length, count)))
-        weights.append(np.full(count, part.length / count))
-    return np.concatenate(points), np.concatenate(weights)
-
-
-def overlap_share(first: BaseGeometry, second: BaseGeometry) -> float:
-    """Quota della linea piu' corta che sta entro CALIBRATION_PAIR_NEAR_M dall'altra.
-
-    Si campiona la linea corta invece di bufferizzare quella lunga: l'unione dei buffer di tracce con
-    decine di migliaia di vertici richiede secondi per coppia, il campionamento sbaglia di meno dell'1%.
-    """
-    shorter, longer = sorted((first, second), key=lambda geom: geom.length)
-    points, weights = sample_points(shorter, config.CALIBRATION_PAIR_SAMPLE_M)
-    shapely.prepare(longer)
-    near = shapely.dwithin(points, longer, config.CALIBRATION_PAIR_NEAR_M)
-    return float(weights[near].sum() / weights.sum())
+# Quota della linea piu' corta entro CALIBRATION_PAIR_NEAR_M dall'altra, campionata ogni CALIBRATION_PAIR_SAMPLE_M
+overlap_share = partial(
+    matching.overlap_share, near_m=config.CALIBRATION_PAIR_NEAR_M, step_m=config.CALIBRATION_PAIR_SAMPLE_M
+)
 
 
 def candidate_pairs(cdi_names: pd.Series, mitur_names: pd.Series) -> pd.DataFrame:

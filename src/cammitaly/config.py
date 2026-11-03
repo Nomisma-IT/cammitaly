@@ -320,6 +320,69 @@ OSM_DISTANCE_DEFAULT_UNIT = "km"
 OSM_DISTANCE_TO_KM = {"km": 1.0, "m": 0.001, "mi": 1.609344}
 OSM_DECLARED_DECIMALS = 3
 
+# --- Etichette dei cammini e delle tratte (tags.py) ---
+TAGS_TRATTE_CSV = INTERIM_DIR / "etichette_tratte.csv"
+TAGS_CAMMINI_CSV = INTERIM_DIR / "etichette_cammini.csv"
+TAGS_CHECK_CSV = INTERIM_DIR / "controllo_religioso.csv"
+TAGS_TRATTE_FIELDS = ["tratta_id", "cammino_id", "fonte", "mezzo", "evidenza_mezzo"]
+TAGS_CAMMINI_FIELDS = [
+    "cammino_id", "fonte", "mezzo", "religioso", "evidenza_religioso", "tipologia", "portata", "tema",
+    "stagione", "credenziale", "segnaletica", "data_catalogo",
+]
+TAGS_CHECK_FIELDS = ["cammino_id", "fonte", "nome", "parole"]
+# Valori nei dati intermedi: ASCII ("si", mai "sì"); i campi multivalore sono uniti da LIST_SEPARATOR e ordinati
+MEZZO_PIEDI, MEZZO_BICI, MEZZO_ENTRAMBI = "piedi", "bici", "entrambi"
+SI, NO = "si", "no"
+LIST_SEPARATOR = "|"
+EVIDENZA_SILENTE = "silente"
+EVIDENZA_PIEDI = "pubblicata a piedi"
+EVIDENZA_TIPO_BICI = "tipo bici"
+EVIDENZA_NOME_ENTRAMBI = "nome: camminanti e bici"
+EVIDENZA_PERCORSO_CONDIVISO = "pubblicata a piedi, su percorso ciclopedonale"
+EVIDENZA_ROUTE = "route={}"
+EVIDENZA_ROUTE_ASSENTE = "route assente"
+EVIDENZA_ROUTE_ALTRA = "route={} (non e' un percorso a piedi o in bici: a piedi)"
+EVIDENZA_OSM_NETWORK = "network={}"
+EVIDENZA_NOME_BICI = "nome: bici"
+EVIDENZA_WEBMAPP = "Webmapp: {}"
+EVIDENZA_CATALOGO_RELIGIOSO = "catalogo dei cammini religiosi"
+EVIDENZA_TEMA_CDI = "tema cdi: spirituale"
+EVIDENZA_TEMA_LAYER = "tema Webmapp: spirituale"
+EVIDENZA_PILGRIMAGE = "pilgrimage={}"
+EVIDENZA_SEPARATOR = "; "
+# Webmapp: attivita' dichiarate dalla traccia (stringa JSON {"<id>": ["hiking", ...]}) e nomi della tassonomia delle
+# attivita' (it/en). Un'attivita' per bici o a piedi si riconosce dal nome; la traccia a piedi con un'attivita' per
+# bici e' pubblicata per entrambi (la regola piu' inclusiva)
+WEBMAPP_CONFIG_FILE = WEBMAPP_RAW_DIR / "config.json"
+TAGS_WEBMAPP_BIKE_PATTERN = r"bike|bici|cycling|mtb"
+TAGS_WEBMAPP_WALK_PATTERN = r"walking|hiking|passeggiata|trekking"
+# OSM: una relazione a piedi in una rete ciclabile (lcn, rcn, ncn, icn; network puo' avere piu' valori separati da ';')
+# o con una parola di bici nel nome e' pubblicata anche per la bici. Esclusioni trovate sui nomi reali: le mura
+# "ciclopiche", il toponimo "Bicione" e le "Forbici" (passo), che contengono "bici"/"ciclo" ma non c'entrano
+OSM_CYCLE_NETWORKS = ("lcn", "rcn", "ncn", "icn")
+OSM_VALUE_SEPARATOR = ";"
+OSM_BIKE_NAME_EXCLUDE_PATTERN = r"ciclopic\w*|forbici|bicione"
+# Marcatura delle icone dei servizi nella scheda MiTur: <img class="cr-ic cr-ic-service" alt="Segnaletica">
+MITUR_SERVICE_CLASS = "cr-ic-service"
+MITUR_SERVICE_CREDENTIAL, MITUR_SERVICE_SIGNAGE = "Credenziali", "Segnaletica"
+TAGS_THEME_RELIGIOUS = "spirituale"
+# pilgrimage: qualunque valore e' un si (yes o un nome come "Via di Francesco") tranne questi
+OSM_PILGRIMAGE_NEGATIVE = ("no", "n")
+# Il refuso della fonte cdi si normalizza prima del confronto
+TAGS_PORTATA_FIXES = {"internazinale": "internazionale"}
+# Webmapp riempie solo i vuoti di tipologia: "linear" e' il valore di default anche per i cammini ad anello.
+# walking_network (nwn/rwn/iwn) non e' la portata di cdi (nwn e' il valore piu' comune) e non si usa
+WEBMAPP_SHAPE_VALUES = {"linear": "lineare", "roundtrip": "anello"}
+WEBMAPP_SEASON_VALUES = {"spring": "primavera", "summer": "estate", "autumn": "autunno", "winter": "inverno"}
+# Parole che fanno sospettare un cammino religioso: intere, oppure prefissi se finiscono con "*". Aggiunte con la
+# prova dei nomi reali: devozional* (cdi "Cammino Devozionale", "Sentiero devozionale"), monaster* ("Via dei
+# Monasteri"), sacr* ("Sacro Monte", "Monti Sacri"). Provate e scartate: pieve (toponimi), spiritual* (nessun nome)
+TAGS_RELIGIOUS_WORDS = (
+    "san", "santa", "santo", "sant", "santi", "santuari*", "madonna", "mater", "francesc*", "frati", "cappuccini",
+    "benedett*", "pellegrin*", "romea", "francigena", "abbazi*", "eremo", "eremi", "devozional*", "monaster*",
+    "sacr*",
+)
+
 # --- Incrocio comuni: quali comuni attraversa un cammino, entro una distanza dal confine comunale ---
 # Gli shapefile ISTAT non hanno il file .cpg: senza questa codifica i nomi accentati escono in mojibake
 ISTAT_ENCODING = "utf-8"
@@ -334,6 +397,110 @@ CROSSING_TIPI = (TIPO_TAPPA, TIPO_VARIANTE, TIPO_ALTRO)
 CROSSING_FIELDS = ("cammino_id", COMUNE_ID_COL, "distanza_m", "dentro", "lunghezza_dentro_m")
 # Raggio iniziale del ritaglio locale della linea attorno a un comune; raddoppia finche' la distanza non e' certa
 CROSSING_CLIP_START_M = 1000.0
+
+# Distanza d dal confine comunale scelta dal committente: calibrata sui dati (recall saturo, costo contenuto)
+CROSSING_DISTANCE_M = 100
+
+# --- Confronto tra cammini: nomi e sovrapposizione dei tracciati (primitive di matching.py) ---
+# Passo (m) dei punti con cui si misura la quota di una linea vicina a un'altra: con 10 m su soglie di 25 m
+# o piu' l'errore della quota e' sotto l'1%, e non si bufferizza mai la linea lunga (secondi per coppia)
+MATCH_SAMPLE_M = 10
+RATIO_DECIMALS = 4  # quote e rapporti nei CSV
+# Parole che non distinguono un cammino da un altro: tolte dal nome prima del confronto. Articoli e preposizioni
+# (anche nelle forme elise, "dell'" -> "dell") e i sostantivi generici dei percorsi. Non si tolgono "alta", "anello",
+# "romea" ecc. (distinguono percorsi diversi che condividono le altre parole) ne' "san", "santa" e simili: "Cammino
+# di San Carlo" e "Cammino di Carlo Magno" sono cammini diversi, il santo fa parte del nome
+NAME_GENERIC_WORDS = frozenset((
+    "il", "lo", "la", "i", "gli", "le", "l", "un", "uno", "una",
+    "di", "del", "dello", "della", "dei", "degli", "delle", "dell", "d",
+    "da", "dal", "dallo", "dalla", "dai", "dagli", "dalle", "dall",
+    "a", "al", "allo", "alla", "ai", "agli", "alle", "all",
+    "in", "nel", "nello", "nella", "nei", "negli", "nelle", "nell",
+    "su", "sul", "sullo", "sulla", "sui", "sugli", "sulle", "sull",
+    "con", "per", "tra", "fra", "e", "ed", "o",
+    "cammino", "cammini", "via", "vie", "sentiero", "sentieri", "percorso", "percorsi",
+    "itinerario", "itinerari", "strada", "strade",
+))
+
+# --- Deduplicazione dei cammini tra le due fonti (dedup.py) ---
+DEDUP_DIR = INTERIM_DIR / "dedup"
+DEDUP_FONTI = (CDI_FONTE, MITUR_FONTE)
+# La geometria di un cammino per la deduplica include tutte le tratte, anche bici e altro (decisione del committente)
+DEDUP_TIPI = (TIPO_TAPPA, TIPO_VARIANTE, TIPO_BICI, TIPO_ALTRO)
+# Regola del committente: due cammini sono lo stesso se i nomi sono simili E almeno DEDUP_OVERLAP_MIN del piu' corto
+# sta entro DEDUP_NEAR_M metri dall'altro. Una sola condizione vera = limbo (da risolvere su OSM)
+DEDUP_OVERLAP_MIN = 0.95
+DEDUP_NEAR_M = 50
+# Soglia sul punteggio dei nomi (token_set_ratio sulle chiavi, 0-100). Sui 34.453 confronti dei dati del 3 novembre
+# 2026 le coppie con punteggio 100 sono 76 e nessuna sta tra 88 e 100: la piu' alta sotto e' 87,5 ("Normanna" /
+# "Normanno", cammini diversi) e tra 65 e 88 ci sono nomi di cammini diversi con una parola in comune o un refuso;
+# l'unica coppia di questa fascia con il tracciato contenuto e' quella delle Colline Novaresi (84,2), due cammini
+# distinti. Ogni soglia tra 87,6 e 100 da' lo stesso insieme: 95 sta in mezzo con margine da entrambi i lati
+DEDUP_NAME_MIN_SCORE = 95
+# Griglia di sensibilita': soglia sul nome x quota minima x distanza
+DEDUP_SENS_NAME_SCORES = (80, 85, 90, 95)
+DEDUP_SENS_OVERLAPS = (0.80, 0.85, 0.90, 0.95)
+DEDUP_SENS_NEAR_M = (25, 50, 100)
+DEDUP_NEAR_VALUES_M = tuple(sorted({DEDUP_NEAR_M, *DEDUP_SENS_NEAR_M}))
+# coppie.csv tiene i candidati: nome almeno cosi' simile (la soglia piu' bassa della griglia) oppure tracciati che si toccano
+DEDUP_CANDIDATE_NAME_MIN = min(DEDUP_SENS_NAME_SCORES)
+CLASSE_DUPLICATO, CLASSE_LIMBO, CLASSE_DISTINTO = "duplicato", "limbo", "distinto"
+CLASSE_QUASI_DUPLICATO = "quasi duplicato"
+MOTIVO_DUPLICATO = "nome simile, tracciato coincidente"
+MOTIVO_NOME_SI_TRACCIATO_NO = "nome simile, tracciato diverso"
+MOTIVO_TRACCIATO_SI_NOME_NO = "tracciato coincidente, nome diverso"
+MOTIVO_NOME_SI_GEOMETRIA_ASSENTE = "nome simile, geometria assente"
+MOTIVO_DISTINTO = "nome e tracciato diversi"
+MOTIVO_DISTINTO_GEOMETRIA_ASSENTE = "nome diverso, geometria assente"
+DEDUP_PAIR_SEPARATOR = "|"  # oggetto del limbo: "cammino_a|cammino_b"
+DEDUP_FILES = {
+    "coppie": "coppie.csv", "limbo": "limbo_dedup.csv", "gruppi": "gruppi.csv",
+    "sensibilita": "sensibilita.csv", "quasi": "quasi_duplicati.csv", "comuni": "confronto_comuni.csv",
+}
+DEDUP_COPPIE_FIELDS = (
+    "cammino_a", "cammino_b", "fonte_a", "fonte_b", "nome_a", "nome_b", "punteggio_nome", "punteggio_nome_sort",
+    "nome_contenuto", "quota_a_in_b", "quota_b_in_a", "quota_minore", "lunghezza_a_m", "lunghezza_b_m",
+    "rapporto_lunghezza", "stato_a", "stato_b", "classe", "motivo",
+)
+DEDUP_GRUPPI_FIELDS = ("gruppo", "cammino_id", "fonte", "nome", "stato_geometria", "lunghezza_m", "catena")
+DEDUP_SENSIBILITA_FIELDS = (
+    "soglia_nome", "soglia_quota", "distanza_m", "n_duplicato", "n_limbo", "n_distinto",
+    "n_nome_100", "n_nome_100_tracciato_diverso", "n_nome_100_geometria_assente",
+)
+# Coppie quasi duplicate: nome come per i duplicati, quota minore da questo valore alla soglia DEDUP_OVERLAP_MIN
+DEDUP_QUASI_OVERLAP_MIN = 0.5
+DEDUP_QUASI_FIELDS = (
+    "cammino_a", "cammino_b", "nome_a", "nome_b", "punteggio_nome", "quota_minore", "cammino_corto",
+    "lunghezza_a_m", "lunghezza_b_m", "n_segmenti_lontani", "km_lontani", "km_segmento_max", "distanza_max_m",
+    "tratta_segmento_max", "tipo_segmento_max", "km_lontani_non_tappa", "diagnosi",
+)
+# Tra due punti campionati consecutivi di una parte la distanza non supera il passo; un salto maggiore (con un po'
+# di tolleranza numerica) è il passaggio a un'altra parte non contigua: li' un segmento lontano si interrompe
+DEDUP_STEP_TOLERANCE = 1.000001
+# Formati delle uscite: cifre decimali dei punteggi dei nomi nei CSV, dei numeri nel dettaglio del limbo (punteggio
+# e km; le quote usano RATIO_DECIMALS), dei km; modello dell'identificativo di gruppo
+SCORE_DECIMALS = 2
+DEDUP_DETAIL_DECIMALS = 1
+KM_DECIMALS = 3
+DEDUP_GROUP_ID_FORMAT = "g{number:03d}"
+DEDUP_NOT_AVAILABLE = "n.d."  # numero mancante nel dettaglio del limbo
+# Diagnosi in parole di un tratto che nel cammino piu' corto sta lontano dall'altro, in quest'ordine:
+# 1 sfasamento: i punti lontani non superano questa distanza, il tracciato e' lo stesso spostato di lato
+DEDUP_OFFSET_MAX_M = 150
+# 2 variante: piu' della meta' dei km lontani sta in tratte di tipo variante, bici o altro
+# 3 tappe mancanti: oltre questa distanza dall'altra fonte il tratto non ha un'alternativa vicina e manca (una tappa
+# e' lunga 15-30 km); sotto, e' una versione diversa del percorso nello stesso corridoio. Sui 10 quasi duplicati
+# senza varianti (dati del 3 novembre 2026) la distanza massima va da 0,7 a 3,3 km per 8 coppie e da 10,9 km in su
+# per le altre 2: 5 km sta nel vuoto tra i due gruppi
+DEDUP_MISSING_MIN_M = 5000
+DIAGNOSI_SFASAMENTO = "sfasamento sistematico"
+DIAGNOSI_VARIANTE = "variante, bici o altro tracciato presente in una sola fonte"
+DIAGNOSI_MANCANTI = "tappe mancanti in una fonte"
+DIAGNOSI_VERSIONE = "versione diversa del percorso su alcuni km"
+DEDUP_COMUNI_FIELDS = (
+    "cammino_a", "cammino_b", "nome_a", "nome_b", "classe", "quota_minore",
+    "n_a", "n_b", "n_entrambi", "n_unione", "jaccard",
+)
 
 # --- Calibrazione della distanza d ---
 CALIBRATION_DIR = INTERIM_DIR / "calibrazione"
@@ -360,7 +527,7 @@ DEGRADE_JITTER_PREFIX, DEGRADE_SHIFT_PREFIX = "j", "o"
 CALIBRATION_PAIR_NAME_MIN_SCORE = 90  # token_sort_ratio sui nomi normalizzati
 CALIBRATION_PAIR_OVERLAP_MIN = 0.8  # quota del cammino piu' corto entro CALIBRATION_PAIR_NEAR_M dall'altro
 CALIBRATION_PAIR_NEAR_M = 50
-CALIBRATION_PAIR_SAMPLE_M = 10  # passo dei punti con cui si misura la quota di linea vicina all'altra
+CALIBRATION_PAIR_SAMPLE_M = MATCH_SAMPLE_M  # passo dei punti con cui si misura la quota di linea vicina all'altra
 # Si confrontano solo coppie di lunghezza simile: con tracciati di lunghezza diversa il recall misura la copertura
 CALIBRATION_PAIR_LENGTH_RATIO = (0.9, 1.1)  # lunghezza cdi / lunghezza MiTur, estremi inclusi
 # Esperimento A: nomi dei luoghi pubblicati confrontati con i comuni ISTAT
@@ -382,7 +549,7 @@ SOURCE_TAPPE, SOURCE_WEBMAPP = "tappe", "webmapp"
 MOTIVO_BRANCH = "ramo senza traccia"
 CALIBRATION_BRANCH_MIN_STAGES = 2
 CALIBRATION_FONTI = (CDI_FONTE, MITUR_FONTE)  # fonti dei costi D e delle coppie C; l'esperimento B sceglie la sua
-CALIBRATION_RATIO_DECIMALS = 4  # quote e recall nei CSV
+CALIBRATION_RATIO_DECIMALS = RATIO_DECIMALS  # quote e recall nei CSV
 CALIBRATION_FILE_SINTESI = "sintesi.csv"
 CALIBRATION_FILES_A = {
     "riferimenti": "A_riferimenti.csv", "match": "A_match.csv",

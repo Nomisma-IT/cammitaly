@@ -9,7 +9,7 @@ from cammitaly import config, files, http
 
 CAMMINI_FIELDS = [
     "id", "slug", "titolo", "link", "modified", "lunghezza_km", "n_tappe", "partenza",
-    "arrivo", "tipologia", "portata", "regioni", "webmapp_layer",
+    "arrivo", "tipologia", "portata", "tema", "stagione", "regioni", "webmapp_layer",
 ]
 TAPPE_FIELDS = ["cammino_id", "ordine", "titolo", "partenza", "arrivo", "distanza_km"]
 
@@ -89,6 +89,8 @@ def _cammino_row(item: dict[str, Any]) -> dict[str, str]:
         "arrivo": scheda.get("arrivo", ""),
         "tipologia": scheda.get("tipologia", ""),
         "portata": scheda.get("portata", ""),
+        "tema": config.LIST_SEPARATOR.join(scheda.get("tema") or []),
+        "stagione": config.LIST_SEPARATOR.join(scheda.get("stagione_ideale") or []),
         "regioni": "|".join(regions),
         "webmapp_layer": layer.group(1) if layer else "",
     }

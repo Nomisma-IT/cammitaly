@@ -209,6 +209,21 @@ def parse_stage(name: str) -> tuple[int | None, bool]:
     return None, False
 
 
+def mentions_bike(name: str, folder: str = "", stem: str = "") -> bool:
+    """Parole di bici nel nome, nel file o nella cartella; un percorso ciclopedonale non conta."""
+    return bool(BIKE_WORDS.search(SHARED_PATH.sub(" ", clean_text(f"{folder} {stem} {name}"))))
+
+
+def mentions_walkers(name: str, stem: str = "") -> bool:
+    """Il nome o il file dice che si cammina ('per camminanti e mtb'); la cartella non conta."""
+    return bool(WALKER_WORDS.search(clean_text(f"{stem} {name}")))
+
+
+def mentions_shared_path(name: str, folder: str = "", stem: str = "") -> bool:
+    """Percorso ciclopedonale o 'strada pedonale ciclabile': si cammina anche a piedi."""
+    return bool(SHARED_PATH.search(clean_text(f"{folder} {stem} {name}")))
+
+
 def classify(name: str, folder: str, stem: str = "") -> tuple[str, int | None]:
     """(tipo, ordine). Il numero si cerca nel nome e, se manca, nel nome del file (KMZ con piu' segnaposto);
     le parole chiave anche nelle cartelle dello zip."""
@@ -216,9 +231,9 @@ def classify(name: str, folder: str, stem: str = "") -> tuple[str, int | None]:
     if number is None and stem:
         number, suffix = parse_stage(stem)
     context = clean_text(f"{folder} {stem} {name}")
-    if BIKE_WORDS.search(SHARED_PATH.sub(" ", context)):
+    if mentions_bike(name, folder, stem):
         # "per camminanti e mtb": si cammina, quindi non e' una traccia solo per la bici
-        if WALKER_WORDS.search(clean_text(f"{stem} {name}")):
+        if mentions_walkers(name, stem):
             return config.TIPO_ALTRO, None
         return config.TIPO_BICI, number
     if COMPLETE_WORDS.search(context):

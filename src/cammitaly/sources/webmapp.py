@@ -45,7 +45,7 @@ def _track_row(hit: dict[str, Any]) -> dict[str, object]:
 
 
 def run(limit: int | None = None, refresh: bool = False) -> None:
-    http.fetch(config.WEBMAPP_CONFIG_URL, config.WEBMAPP_RAW_DIR / "config.json", config.HOST_S3, refresh)
+    http.fetch(config.WEBMAPP_CONFIG_URL, config.WEBMAPP_CONFIG_FILE, config.HOST_S3, refresh)
     listing_path = config.WEBMAPP_RAW_DIR / "listing.json"
     http.fetch(config.WEBMAPP_LISTING_URL, listing_path, config.HOST_MAPHUB, refresh)
     hits = json.loads(listing_path.read_text(encoding="utf-8"))["hits"]

@@ -17,7 +17,7 @@ from cammitaly import config, files, http
 
 FIELDS = [
     "nome", "slug", "regioni", "in_catalogo_dal", "decreto", "sito_web", "url_percorso",
-    "pagina", "n_file", "tipi_file", "nota",
+    "pagina", "n_file", "tipi_file", "servizi", "nota",
 ]
 
 
@@ -51,7 +51,7 @@ def zip_file_name(url: str) -> str:
 
 
 class _ListingParser(HTMLParser):
-    """Raccoglie nome, regioni, nota di catalogo e link di ogni scheda (article.cr-card)."""
+    """Raccoglie nome, regioni, nota di catalogo, icone dei servizi e link di ogni scheda (article.cr-card)."""
 
     def __init__(self, source: str) -> None:
         super().__init__()
@@ -75,12 +75,14 @@ class _ListingParser(HTMLParser):
         if tag == config.MITUR_CARD_TAG and config.MITUR_CARD_CLASS in classes:
             self._item = {
                 "nome": "", "regioni": "", "nota": "", "sito_web": "", "url_percorso": "",
-                "href_scartati": [], "n_disattivati": 0,
+                "href_scartati": [], "n_disattivati": 0, "servizi": [],
             }
             self._capture = None
             return
         if self._item is None:
             return
+        if tag == "img" and config.MITUR_SERVICE_CLASS in classes:
+            self._item["servizi"].append(attributes.get("alt", ""))
         if self._capture is None:
             self._begin_capture(tag, classes)
         else:
@@ -314,7 +316,8 @@ def _csv_row(item: dict[str, Any]) -> dict[str, object]:
         "nome": item["nome"], "slug": item["slug"], "regioni": regions,
         "in_catalogo_dal": iso_date, "decreto": decree, "sito_web": item["sito_web"],
         "url_percorso": item["url_percorso"], "pagina": item["pagina"],
-        "n_file": n_files, "tipi_file": kinds, "nota": _row_note(item),
+        "n_file": n_files, "tipi_file": kinds, "servizi": config.LIST_SEPARATOR.join(item["servizi"]),
+        "nota": _row_note(item),
     }
 
 

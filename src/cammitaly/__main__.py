@@ -1,9 +1,9 @@
-"""Riga di comando: python -m cammitaly fetch <fonte> [--limit N] [--refresh] | build <fonte> | calibra."""
+"""Riga di comando: python -m cammitaly fetch <fonte> [--limit N] [--refresh] | build <fonte> | calibra | dedup | tag."""
 import argparse
 import sys
 from collections.abc import Callable, Sequence
 
-from cammitaly import calibration, files, http
+from cammitaly import calibration, dedup, files, http, tags
 from cammitaly.geometry import cdi
 from cammitaly.geometry import mitur as mitur_tratte
 from cammitaly.geometry import osm as osm_tratte
@@ -37,6 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     build = commands.add_parser("build", help="costruisce le tratte di una fonte")
     build.add_argument("source", choices=sorted(BUILDERS))
     commands.add_parser("calibra", help="calibra la distanza di attraversamento dei comuni")
+    commands.add_parser("dedup", help="testa la regola di deduplicazione dei cammini tra le due fonti")
+    commands.add_parser("tag", help="etichetta tratte e cammini per mezzo e carattere religioso")
     return parser
 
 
@@ -47,9 +49,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             BUILDERS[args.source]()
         elif args.command == "calibra":
             calibration.run()
+        elif args.command == "dedup":
+            dedup.run()
+        elif args.command == "tag":
+            tags.run()
         else:
             SOURCES[args.source](args.limit, args.refresh)
-    except (http.FetchError, files.UnsafeArchiveError) as error:
+    except (http.FetchError, files.UnsafeArchiveError, tags.TagError) as error:
         print(f"ERRORE: {error}", file=sys.stderr)
         return 2
     return 0

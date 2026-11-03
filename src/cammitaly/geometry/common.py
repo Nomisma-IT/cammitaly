@@ -174,3 +174,9 @@ def write_cammini(rows: Iterable[Mapping[str, object]], fonte: str, fields: list
 
 def write_limbo(rows: Iterable[Mapping[str, object]], fonte: str) -> int:
     return files.write_csv(Path(config.LIMBO_CSV_TEMPLATE.format(fonte=fonte)), config.LIMBO_FIELDS, rows)
+
+
+def write_frame(frame: pd.DataFrame, path: Path) -> None:
+    """Tabella di pandas in CSV (UTF-8, fine riga LF, valori mancanti vuoti); crea la cartella se manca."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path, index=False, encoding="utf-8", lineterminator="\n")
