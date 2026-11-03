@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+# Tutti i dati sono rigenerabili dalle fonti o salvati a mano dal proprietario
+data/
