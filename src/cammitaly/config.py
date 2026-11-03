@@ -283,18 +283,27 @@ LON_LAT_LIMITS = (180.0, 90.0)  # |lon| e |lat| massimi; coordinate oltre questi
 OSM_FONTE = "osm"
 OSM_ID_PREFIX = "osm:r"  # tratta_id e cammino_id coincidono: una relazione e' un percorso intero, non una tappa
 OSM_RELATION_URL = "https://www.openstreetmap.org/relation/{relation_id}"
+OSM_TYPE_KEY, OSM_ROUTE_KEY = "type", "route"
+OSM_MEMBER_WAY, OSM_MEMBER_RELATION = "w", "r"  # tipi di membro come li riporta pyosmium
 OSM_RELATION_TYPES = ("route", "superroute")
 # Si scelgono le relazioni a piedi, oppure di qualunque tipo di route purche' marcate come pellegrinaggio
 OSM_WALK_ROUTES = ("hiking", "foot", "walking")
 OSM_BIKE_ROUTES = ("bicycle", "mtb")  # entrano solo con pilgrimage=yes e hanno tipo bici
 OSM_PILGRIMAGE_KEY, OSM_PILGRIMAGE_YES = "pilgrimage", "yes"
-OSM_KEY_FILTER = ("route", OSM_PILGRIMAGE_KEY)  # chiavi per il filtro di libosmium, prima del controllo dei valori
-# Ruoli dei way che non fanno parte del tracciato principale
-OSM_SKIPPED_ROLES = frozenset(("alternative", "excursion", "approach"))
+OSM_KEY_FILTER = (OSM_ROUTE_KEY, OSM_PILGRIMAGE_KEY)  # chiavi per il filtro di libosmium, prima del controllo dei valori
+# Ruoli dei membri (way e sotto-relazioni): le varianti ufficiali fanno parte del cammino e vanno in una tratta
+# a parte (tipo variante); approach ed excursion sono raccordi e escursioni, fuori dal cammino; ogni altro
+# ruolo (vuoto, main, forward, backward, sconosciuto) e' il percorso principale. Il ruolo si eredita nelle sotto-relazioni
+OSM_VARIANT_ROLE_PATTERN = r"^alternat"  # alternative, alternate, alternative:2, ...
+OSM_EXCLUDED_ROLES = frozenset(("approach", "excursion"))
+OSM_VARIANT_SUFFIX = ":variante"  # tratta_id della tratta delle varianti: osm:r<id>:variante
 OSM_MAX_DEPTH = 6  # profondita' massima delle super-relazioni; oltre, i figli si ignorano
 OSM_NAME_TAGS = ("name:it", "name", "ref")  # il primo presente e' il nome del cammino
 OSM_TAG_COLUMNS = ("ref", "route", "network", "pilgrimage", "operator", "wikidata", "website")
-OSM_STRUCTURE_COLUMNS = ("is_super", "n_children", "n_children_not_selected", "n_missing_ways")
+OSM_STRUCTURE_COLUMNS = (
+    "is_super", "n_children", "n_children_not_selected", "n_missing_ways", "n_missing_nodes",
+    "n_membri_variante", "n_membri_esclusi",
+)
 CAMMINI_OSM_FIELDS = [*CAMMINI_FIELDS, *OSM_TAG_COLUMNS, *OSM_STRUCTURE_COLUMNS]
 # Memoria: l'IdSet denso di libosmium alloca 512 KB per ogni intervallo di id toccato, quindi i nodi si
 # leggono a fette di id; le coordinate si tengono come interi a 1e-7 gradi (int32) in array numpy
@@ -304,6 +313,12 @@ OSM_MAX_RSS_MB = 1250  # oltre questo RSS il processo si ferma da solo (il PC ha
 OSM_RSS_SAMPLE_S = 0.25
 OSM_RSS_ABORT_EXIT_CODE = 3
 OSM_CHUNK_ROWS = 1500  # tratte per blocco di scrittura del GeoPackage: le geometrie non restano tutte in memoria
+# Tag distance: numero con unita' facoltativa (km se manca). Non interpretabile = non dichiarata
+OSM_DISTANCE_KEY = "distance"
+OSM_DISTANCE_PATTERN = r"^\s*(\d+(?:[.,]\d+)?)\s*(km|m|mi)?\s*$"
+OSM_DISTANCE_DEFAULT_UNIT = "km"
+OSM_DISTANCE_TO_KM = {"km": 1.0, "m": 0.001, "mi": 1.609344}
+OSM_DECLARED_DECIMALS = 3
 
 # --- Incrocio comuni: quali comuni attraversa un cammino, entro una distanza dal confine comunale ---
 # Gli shapefile ISTAT non hanno il file .cpg: senza questa codifica i nomi accentati escono in mojibake
@@ -312,9 +327,11 @@ ISTAT_COMUNI_SHP = ISTAT_EXTRACT_DIR / f"Com0101{ISTAT_EDITION_YEAR}" / f"Com010
 ISTAT_REGIONI_SHP = ISTAT_EXTRACT_DIR / f"Reg0101{ISTAT_EDITION_YEAR}" / f"Reg0101{ISTAT_EDITION_YEAR}_WGS84.shp"
 COMUNE_ID_COL, COMUNE_NAME_COL, COMUNE_REGION_COL = "PRO_COM_T", "COMUNE", "COD_REG"
 REGION_CODE_COL, REGION_NAME_COL = "COD_REG", "DEN_REG"
+ID_SEPARATOR = ":"  # separa la fonte dal resto negli identificativi ("cdi:123", "mitur:slug")
 # Tipi di tratta che formano la linea di un cammino; le tracce per bici non sono cammino a piedi
 CROSSING_TIPI = (TIPO_TAPPA, TIPO_VARIANTE, TIPO_ALTRO)
-CROSSING_FIELDS = ("cammino_id", COMUNE_ID_COL, "distanza_m", "lunghezza_dentro_m")
+# dentro = la linea tocca o entra nel comune (indipendente dall'arrotondamento di distanza_m)
+CROSSING_FIELDS = ("cammino_id", COMUNE_ID_COL, "distanza_m", "dentro", "lunghezza_dentro_m")
 # Raggio iniziale del ritaglio locale della linea attorno a un comune; raddoppia finche' la distanza non e' certa
 CROSSING_CLIP_START_M = 1000.0
 
@@ -324,18 +341,28 @@ CALIBRATION_DISTANCES_M = (0, 25, 50, 100, 200, 400, 800)
 CALIBRATION_PERCENTILES = (50, 90, 95, 99)
 CALIBRATION_FAR_M = 400  # le coppie di riferimento oltre questa distanza vanno in un elenco da ispezionare
 CALIBRATION_GRAZING_M = (50, 100)  # lunghezza dentro il comune sotto la quale la linea "sfiora" soltanto
-# Esperimento B: tracce dense (MiTur) degradate alla precisione di Webmapp
+CALIBRATION_SEED = 20261103  # semi dei disturbi casuali di B: stesso seme, stessi numeri
+# Esperimento B: tracce dense (MiTur) degradate in precisione
 CALIBRATION_DENSE_SPACING_M = 10
 # Con meno tratte dense di cosi' in MiTur, il campione di B si completa con le tratte cdi piu' dense
 CALIBRATION_DENSE_MIN_TRATTE = 50
 CALIBRATION_SUBSAMPLE_SPACINGS_M = (25, 60)  # spaziatura media obiettivo di "un vertice ogni k"
 CALIBRATION_SIMPLIFY_TOLERANCES_M = (10, 25)
-DEGRADE_SUBSAMPLE_PREFIX, DEGRADE_SIMPLIFY_PREFIX = "k", "s"  # nomi dei metodi: k25, k60, s10, s25
+CALIBRATION_JITTER_SIGMAS_M = (10, 25, 50)  # errore laterale: disturbo gaussiano indipendente su ogni vertice
+CALIBRATION_SHIFT_OFFSETS_M = (25, 50)  # errore laterale sistematico: linea traslata di lato
+SHIFT_SIDES = {"sx": 1, "dx": -1}  # segno del parametro di offset_curve (positivo = a sinistra)
+# Comuni "a rischio": la traccia densa vi sta dentro per meno di cosi' (somma sulle tratte del cammino)
+CALIBRATION_MARGINAL_M = 200
+# Nomi dei metodi: k25, k60 (un vertice ogni k), s10, s25 (semplificazione), j10... (disturbo), o25... (traslazione)
+DEGRADE_SUBSAMPLE_PREFIX, DEGRADE_SIMPLIFY_PREFIX = "k", "s"
+DEGRADE_JITTER_PREFIX, DEGRADE_SHIFT_PREFIX = "j", "o"
 # Esperimento C: coppie provvisorie cdi-MiTur dello stesso cammino (solo per la calibrazione, non e' la deduplica)
 CALIBRATION_PAIR_NAME_MIN_SCORE = 90  # token_sort_ratio sui nomi normalizzati
 CALIBRATION_PAIR_OVERLAP_MIN = 0.8  # quota del cammino piu' corto entro CALIBRATION_PAIR_NEAR_M dall'altro
 CALIBRATION_PAIR_NEAR_M = 50
 CALIBRATION_PAIR_SAMPLE_M = 10  # passo dei punti con cui si misura la quota di linea vicina all'altra
+# Si confrontano solo coppie di lunghezza simile: con tracciati di lunghezza diversa il recall misura la copertura
+CALIBRATION_PAIR_LENGTH_RATIO = (0.9, 1.1)  # lunghezza cdi / lunghezza MiTur, estremi inclusi
 # Esperimento A: nomi dei luoghi pubblicati confrontati con i comuni ISTAT
 PLACE_SPLIT_PATTERN = r"[/(),;]|\s-\s"  # nomi doppi, parentesi, virgole e " - " dividono il testo in candidati
 PLACE_STOPWORDS = frozenset((
@@ -345,8 +372,15 @@ PLACE_STOPWORDS = frozenset((
 PLACE_SAINT_TOKENS = frozenset(("s", "san", "sant", "santa", "santo"))
 PLACE_SAINT_CANONICAL = "san"
 ISTAT_BILINGUAL_SEPARATOR = "/"
-MATCH_OK, MATCH_HOMONYM, MATCH_NOT_FOUND, MATCH_EMPTY = "ok", "omonimo", "non_trovato", "vuoto"
+# Esiti del confronto di un nome: omonimo = un solo pezzo con piu' comuni; due luoghi = pezzi che danno comuni diversi;
+# nome_parziale = il nome e' l'inizio (parole intere) del nome di un altro comune delle stesse regioni
+MATCH_OK, MATCH_HOMONYM, MATCH_TWO_PLACES = "ok", "omonimo", "due luoghi"
+MATCH_PREFIX, MATCH_NOT_FOUND, MATCH_EMPTY = "nome_parziale", "non_trovato", "vuoto"
 SOURCE_TAPPE, SOURCE_WEBMAPP = "tappe", "webmapp"
+# Motivo di una coppia lontana, solo dove si ricava dai dati: le altre tappe del cammino sono tutte a distanza 0
+# e quelle lontane sono un blocco contiguo di almeno CALIBRATION_BRANCH_MIN_STAGES tappe
+MOTIVO_BRANCH = "ramo senza traccia"
+CALIBRATION_BRANCH_MIN_STAGES = 2
 CALIBRATION_FONTI = (CDI_FONTE, MITUR_FONTE)  # fonti dei costi D e delle coppie C; l'esperimento B sceglie la sua
 CALIBRATION_RATIO_DECIMALS = 4  # quote e recall nei CSV
 CALIBRATION_FILE_SINTESI = "sintesi.csv"

@@ -36,6 +36,7 @@ def test_distanze_e_lunghezza_dentro(comuni: gpd.GeoDataFrame) -> None:
     assert by_comune.loc["A", "distanza_m"] == 0 and by_comune.loc["A", "lunghezza_dentro_m"] == pytest.approx(1000)
     assert by_comune.loc["B", "distanza_m"] == 0 and by_comune.loc["B", "lunghezza_dentro_m"] == pytest.approx(500)
     assert by_comune.loc["C", "distanza_m"] == pytest.approx(800) and by_comune.loc["C", "lunghezza_dentro_m"] == 0
+    assert by_comune["dentro"].to_dict() == {"A": True, "B": True, "C": False}
     assert "D" not in by_comune.index
 
 
@@ -105,10 +106,21 @@ def test_dissolve_esclude_le_tracce_per_bici_e_unisce_le_tratte() -> None:
     assert crossing.dissolve_cammini(tratte, tipi=("bici",)).index.tolist() == ["c1"]
 
 
-def test_within_distance_filtra_senza_ricalcolare(comuni: gpd.GeoDataFrame) -> None:
-    pairs = crossing.comuni_entro(lines_of(x=LineString([(-500, 500), (1500, 500)])), comuni, 800)
-    assert len(crossing.within_distance(pairs, 0)) == 2
-    assert len(crossing.within_distance(pairs, 800)) == 3
+def test_filtro_per_distanza_coincide_con_il_calcolo_diretto(comuni: gpd.GeoDataFrame) -> None:
+    line = lines_of(x=LineString([(-500, 500), (1500, 500)]))
+    wide = crossing.comuni_entro(line, comuni, 800)
+    for d in (0, 799, 800):
+        direct = crossing.comuni_entro(line, comuni, d)
+        assert crossing.within_distance(wide, d).reset_index(drop=True).equals(direct)
+
+
+def test_dentro_non_dipende_dall_arrotondamento_della_distanza(comuni: gpd.GeoDataFrame) -> None:
+    # A 4 mm dal comune la distanza arrotondata a due decimali vale 0, ma la linea non entra
+    line = lines_of(x=LineString([(-0.004, 100), (-0.004, 200)]))
+    assert crossing.comuni_entro(line, comuni, 0).empty
+    near = crossing.comuni_entro(line, comuni, 1)
+    assert near["distanza_m"].iloc[0] == 0 and not near["dentro"].iloc[0]
+    assert crossing.within_distance(near, 0).empty and len(crossing.within_distance(near, 1)) == 1
 
 
 def test_slug_regione_come_su_camminiditalia() -> None:

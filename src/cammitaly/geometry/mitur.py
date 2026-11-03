@@ -12,7 +12,7 @@ import shapely
 
 from cammitaly import config
 from cammitaly.geometry import common
-from cammitaly.geometry.common import count_by, limbo_row, normalize_name, print_spacing, read_csv
+from cammitaly.geometry.common import count_by, limbo_row, normalize_name, print_spacing, read_csv, relative_origin
 
 Coord = tuple[float, float]
 Parts = list[list[Coord]]
@@ -261,10 +261,6 @@ def _unique_id(base: str, used: set[str]) -> str:
     return candidate
 
 
-def _origin(path: Path) -> str:
-    return (path.relative_to(config.ROOT) if path.is_relative_to(config.ROOT) else path).as_posix()
-
-
 def _item_record(slug: str, tratta_id: str, name: str, original: PurePosixPath, geom: Any, origin: str) -> dict[str, Any]:
     tipo, ordine = classify(name, original.parent.as_posix(), original.stem)
     return {
@@ -310,7 +306,7 @@ def file_tratte(
             limbo.append(limbo_row(tratta_id, config.MOTIVO_FUORI_ITALIA, "riquadro interamente fuori dall'Italia"))
         else:
             name = (item.name if many and item.name else pure.stem)
-            record = _item_record(slug, tratta_id, name, pure, geom, _origin(path))
+            record = _item_record(slug, tratta_id, name, pure, geom, relative_origin(path))
             tratte.append(Tratta(record, extension, path.name))
     return tratte, limbo
 

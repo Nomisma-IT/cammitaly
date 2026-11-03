@@ -13,7 +13,6 @@ from rapidfuzz import fuzz
 from cammitaly import config
 from cammitaly.geometry import common
 from cammitaly.geometry.common import limbo_row, normalize_name  # normalize_name e' usato anche da calibration
-from cammitaly.geometry.common import read_csv as _read_csv
 from cammitaly.sources.webmapp import track_path
 
 STAGE_NUMBER = re.compile(config.CDI_STAGE_NUMBER_PATTERN)
@@ -254,7 +253,7 @@ def _add_geometry(result: BuildResult, track: dict[str, str], assignment: Assign
         result.gap_split.append(track["track_id"])
     tipo = classify_tipo(track["name_it"], track["ref"])
     path = track_path(track["track_id"])
-    origin = (path.relative_to(config.ROOT) if path.is_relative_to(config.ROOT) else path).as_posix()
+    origin = common.relative_origin(path)
     for cammino_id in assignment.cammini:
         record = _track_record(track, cammino_id, tipo, geom, origin)
         result.records.append(record)
@@ -353,9 +352,9 @@ def _missing_reason(c: dict[str, str], layers_with_tracks: set[str]) -> str:
 
 
 def run() -> None:
-    cammini = _read_csv(config.CDI_CAMMINI_CSV)
-    tracks = _read_csv(config.WEBMAPP_TRACKS_CSV)
-    result = build_tratte(tracks, cammini, _read_csv(config.CDI_TAPPE_CSV))
+    cammini = common.read_csv(config.CDI_CAMMINI_CSV)
+    tracks = common.read_csv(config.WEBMAPP_TRACKS_CSV)
+    result = build_tratte(tracks, cammini, common.read_csv(config.CDI_TAPPE_CSV))
     frame = common.tratte_frame(result.records)
     layers_with_tracks = {layer for t in tracks for layer in split_layers(t["layers"])}
     rows, missing = cammini_rows(cammini, frame, layers_with_tracks)

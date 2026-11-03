@@ -4,7 +4,6 @@ Una linea "attraversa" un comune se la sua distanza dal poligono comunale e' al 
 (d = 0: la linea entra nel comune). Le distanze sono sempre in metri nel CRS di lavoro.
 """
 import re
-import unicodedata
 from collections.abc import Iterable
 
 import geopandas as gpd
@@ -14,6 +13,7 @@ import shapely
 from shapely.geometry.base import BaseGeometry
 
 from cammitaly import config
+from cammitaly.geometry.common import normalize_name
 
 
 def _polygonal_part(geom: BaseGeometry) -> BaseGeometry:
@@ -43,9 +43,10 @@ def load_comuni() -> gpd.GeoDataFrame:
 
 def region_slug(name: str) -> str:
     """'Valle d'Aosta/Vallee d'Aoste' -> 'valle-daosta': la forma usata dagli slug di camminiditalia.org."""
-    first = name.split(config.ISTAT_BILINGUAL_SEPARATOR)[0].casefold().replace("'", "")
-    plain = "".join(ch for ch in unicodedata.normalize("NFKD", first) if not unicodedata.combining(ch))
-    return re.sub(config.SLUG_STRIP_PATTERN, "-", plain).strip("-")
+    first = name.split(config.ISTAT_BILINGUAL_SEPARATOR)[0]
+    # L'apostrofo si toglie prima della normalizzazione, che altrimenti lo ridurrebbe a uno spazio
+    unquoted = re.sub(config.NAME_APOSTROPHES_PATTERN, "", first).replace("'", "")
+    return "-".join(normalize_name(unquoted).split())
 
 
 def load_region_codes() -> dict[str, int]:
@@ -90,7 +91,8 @@ def length_inside(line: BaseGeometry, polygon: BaseGeometry) -> float:
 def comuni_entro(lines: gpd.GeoSeries, comuni: gpd.GeoDataFrame, d: float) -> pd.DataFrame:
     """Coppie (cammino_id, comune) con la linea a distanza <= d metri dal comune.
 
-    Colonne CROSSING_FIELDS: distanza_m e' 0 se la linea entra nel comune, lunghezza_dentro_m e' 0 negli altri casi.
+    Colonne CROSSING_FIELDS: dentro e' vero se la linea tocca o entra nel comune (allora distanza_m e' 0);
+    lunghezza_dentro_m e' 0 negli altri casi. distanza_m e' arrotondata: per sapere se la linea entra si usa dentro.
     I candidati vengono dall'indice spaziale (predicato dwithin); la distanza esatta si calcola solo su di essi.
     """
     line_geoms, comune_geoms = lines.to_numpy(), comuni.geometry.to_numpy()
@@ -106,11 +108,15 @@ def comuni_entro(lines: gpd.GeoSeries, comuni: gpd.GeoDataFrame, d: float) -> pd
         "cammino_id": lines.index.to_numpy()[line_idx],
         config.COMUNE_ID_COL: comuni[config.COMUNE_ID_COL].to_numpy()[comune_idx],
         "distanza_m": distance.round(config.METERS_DECIMALS),
+        "dentro": inside,
         "lunghezza_dentro_m": inside_length.round(config.METERS_DECIMALS),
     })
     return result.sort_values(["cammino_id", "distanza_m", config.COMUNE_ID_COL], ignore_index=True)[list(config.CROSSING_FIELDS)]
 
 
 def within_distance(pairs: pd.DataFrame, d: float) -> pd.DataFrame:
-    """Sottoinsieme delle coppie calcolate con una distanza maggiore: la distanza esatta non dipende da d."""
-    return pairs[pairs["distanza_m"] <= d]
+    """Sottoinsieme delle coppie calcolate con una distanza maggiore: la distanza esatta non dipende da d.
+
+    Con d = 0 conta `dentro`, non la distanza arrotondata a due decimali.
+    """
+    return pairs[pairs["dentro"]] if d == 0 else pairs[pairs["distanza_m"] <= d]

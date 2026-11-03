@@ -51,6 +51,11 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def relative_origin(path: Path) -> str:
+    """Percorso del file di origine, relativo alla radice del repo se ci sta dentro (separatori /)."""
+    return (path.relative_to(config.ROOT) if path.is_relative_to(config.ROOT) else path).as_posix()
+
+
 def print_spacing(label: str, walk: gpd.GeoDataFrame) -> None:
     """Percentili della spaziatura media per tratta e dei singoli segmenti delle tratte date (di tappa)."""
     if not len(walk):

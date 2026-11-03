@@ -15,12 +15,12 @@ COMUNE = config.COMUNE_ID_COL
 @pytest.fixture
 def comuni_istat() -> pd.DataFrame:
     return pd.DataFrame({
-        COMUNE: ["010001", "010002", "020001", "030001", "030002", "040001", "050001", "060001"],
+        COMUNE: ["010001", "010002", "020001", "030001", "030002", "040001", "050001", "060001", "070001", "070002"],
         config.COMUNE_NAME_COL: [
             "Bolzano/Bozen", "Sant'Angelo Lodigiano", "Reggio nell'Emilia", "Castro", "Castro", "San Giovanni in Fiore",
-            "Santangelo", "Forlì",
+            "Santangelo", "Forlì", "Trevignano", "Trevignano Romano",
         ],
-        config.COMUNE_REGION_COL: [4, 3, 8, 3, 16, 18, 16, 8],
+        config.COMUNE_REGION_COL: [4, 3, 8, 3, 16, 18, 16, 8, 5, 12],
     })
 
 
@@ -69,8 +69,19 @@ def test_omonimo_ambiguo_e_scartato_ma_la_regione_lo_risolve(comuni_istat: pd.Da
     assert match("Castro", comuni_istat, regions={3}) == (config.MATCH_OK, "030001")
 
 
-def test_due_comuni_diversi_in_pezzi_diversi_sono_ambigui(comuni_istat: pd.DataFrame) -> None:
-    assert match("Forlì / Bolzano", comuni_istat) == (config.MATCH_HOMONYM, None)
+def test_due_comuni_diversi_in_pezzi_diversi_sono_due_luoghi_non_omonimi(comuni_istat: pd.DataFrame) -> None:
+    assert match("Forlì / Bolzano", comuni_istat) == (config.MATCH_TWO_PLACES, None)
+    assert match("Forlì - Bolzano", comuni_istat) == (config.MATCH_TWO_PLACES, None)
+    assert match("Castro / Forlì", comuni_istat) == (config.MATCH_HOMONYM, None)  # un pezzo e' gia' ambiguo
+
+
+def test_nome_che_e_l_inizio_di_un_altro_comune_delle_regioni_e_ambiguo(comuni_istat: pd.DataFrame) -> None:
+    assert match("Trevignano", comuni_istat, regions={5, 12}) == (config.MATCH_PREFIX, None)
+    assert match("Trevignano", comuni_istat) == (config.MATCH_PREFIX, None)
+    assert match("Trevignano", comuni_istat, regions={5}) == (config.MATCH_OK, "070001")  # l'altro non e' nelle regioni
+    assert match("Trevignano", comuni_istat, regions={12}) == (config.MATCH_NOT_FOUND, None)  # solo l'inizio: non basta
+    assert match("Trevignano Romano", comuni_istat, regions={5, 12}) == (config.MATCH_OK, "070002")
+    assert match("Bolzano", comuni_istat) == (config.MATCH_OK, "010001")  # "Bozen" e' la stessa riga, non un altro comune
 
 
 def test_luoghi_che_non_sono_comuni_e_nomi_vuoti(comuni_istat: pd.DataFrame) -> None:
@@ -136,7 +147,8 @@ def test_semplificazione_toglie_i_vertici_entro_la_tolleranza() -> None:
 
 
 def test_metodi_di_degradazione_dai_parametri_di_config() -> None:
-    assert list(cal.degradation_methods()) == ["k25", "k60", "s10", "s25"]
+    expected = ["k25", "k60", "s10", "s25", "j10", "j25", "j50", "o25sx", "o25dx", "o50sx", "o50dx"]
+    assert list(cal.degradation_methods()) == expected
 
 
 def test_tratte_dense_da_mitur_e_dalle_cdi_solo_se_mitur_ne_ha_troppo_poche(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -160,7 +172,7 @@ def test_tratte_dense_da_mitur_e_dalle_cdi_solo_se_mitur_ne_ha_troppo_poche(monk
 def test_recall_ed_extra_per_ogni_d() -> None:
     reference = pd.DataFrame({"gruppo": ["g", "g"], COMUNE: ["A", "B"]})
     candidates = pd.DataFrame({
-        "gruppo": ["g", "g", "g"], COMUNE: ["A", "B", "C"], "distanza_m": [0.0, 30.0, 300.0],
+        "gruppo": ["g", "g", "g"], COMUNE: ["A", "B", "C"], "distanza_m": [0.0, 30.0, 300.0], "dentro": [True, False, False],
     })
     detail = cal.compare_sets(reference, candidates).set_index("d_m")
     assert detail.loc[0, ["n_trovati", "n_extra", "recall"]].tolist() == [1, 0, 0.5]
@@ -174,7 +186,7 @@ def test_recall_ed_extra_per_ogni_d() -> None:
 
 def test_una_tratta_non_trovata_a_nessuna_distanza_abbassa_il_recall() -> None:
     reference = pd.DataFrame({"gruppo": ["g1", "g1", "g2"], COMUNE: ["A", "B", "C"]})
-    candidates = pd.DataFrame({"gruppo": ["g1"], COMUNE: ["A"], "distanza_m": [0.0]})
+    candidates = pd.DataFrame({"gruppo": ["g1"], COMUNE: ["A"], "distanza_m": [0.0], "dentro": [True]})
     totals = cal.totals_by_distance(cal.compare_sets(reference, candidates))
     assert totals.loc[800, "recall"] == pytest.approx(1 / 3, abs=1e-4)
     assert totals.loc[800, "recall_media_gruppo"] == pytest.approx(0.25)
@@ -186,7 +198,8 @@ def test_sovrapposizione_conta_la_parte_della_linea_corta_entro_50_metri() -> No
     longer = LineString([(0, 0), (2000, 0)])
     assert cal.overlap_share(LineString([(100, 30), (900, 30)]), longer) == pytest.approx(1.0)
     assert cal.overlap_share(LineString([(100, 100), (900, 100)]), longer) == pytest.approx(0.0)
-    assert cal.overlap_share(LineString([(1500, 0), (2500, 0)]), longer) == pytest.approx(0.55, abs=0.02)  # 500 m + 50 m di tolleranza su 1000
+    # 500 m sovrapposti e 50 m di tolleranza su 1000 m di linea corta
+    assert cal.overlap_share(LineString([(1500, 0), (2500, 0)]), longer) == pytest.approx(0.55, abs=0.02)
 
 
 def test_coppie_provvisorie_chiedono_nome_simile_e_tracciato_sovrapposto() -> None:
@@ -198,13 +211,27 @@ def test_coppie_provvisorie_chiedono_nome_simile_e_tracciato_sovrapposto() -> No
     }
     pairs = cal.same_cammino_pairs(lines, cdi_names, mitur_names)
     assert pairs[["cdi_id", "mitur_id"]].values.tolist() == [["cdi:1", "mitur:a"]]
+    assert pairs["rapporto_lunghezza"].tolist() == [1.0] and pairs["nel_rapporto"].tolist() == [True]
+
+
+def test_il_rapporto_di_lunghezza_marca_le_coppie_con_tracciati_di_estensione_diversa() -> None:
+    cdi_names = pd.Series({"cdi:1": "Via Beta", "cdi:2": "Via Gamma"})
+    mitur_names = pd.Series({"mitur:a": "Via Beta", "mitur:b": "Via Gamma"})
+    lines = {
+        "cdi:1": LineString([(0, 0), (5000, 0)]), "mitur:a": LineString([(0, 0), (2000, 0)]),  # stesso nome, un terzo del percorso
+        "cdi:2": LineString([(0, 0), (5000, 0)]), "mitur:b": LineString([(0, 10), (4800, 10)]),  # rapporto 1,04
+    }
+    pairs = cal.same_cammino_pairs(lines, cdi_names, mitur_names).set_index("cdi_id")
+    assert pairs.loc["cdi:1", "rapporto_lunghezza"] == 2.5 and not pairs.loc["cdi:1", "nel_rapporto"]
+    assert pairs.loc["cdi:2", "nel_rapporto"] and pairs.loc["cdi:2", "rapporto_lunghezza"] == pytest.approx(1.0417, abs=1e-4)
 
 
 # --- percorsi di sintesi ---
 
 def test_distribuzione_delle_distanze() -> None:
     row = cal.distance_distribution(pd.Series([0.0, 0.0, 0.0, 100.0, np.nan]), "cammino")
-    assert row["n_coppie"] == 4 and row["quota_a_0"] == 0.75 and row["max"] == 100.0 and row["p50"] == 0.0
+    assert (row["n_coppie"], row["n_senza_linea"], row["n_misurate"]) == (5, 1, 4)
+    assert row["quota_a_0"] == 0.75 and row["max"] == 100.0 and row["p50"] == 0.0
     assert row["p99"] == pytest.approx(97.0)
 
 
@@ -214,6 +241,7 @@ def test_coppie_lontane_sono_uniche_e_ordinate_dalla_piu_distante() -> None:
         "cammino": ["Uno", "Uno", "Due", "Tre"], "origine": ["tappe"] * 4, "ruolo": ["partenza", "arrivo", "to", "to"],
         "nome": ["Alfa", "Alfa", "Beta", "Gamma"], "comune": ["Alfa", "Alfa", "Beta", "Gamma"],
         "dist_cammino_m": [900.0, 900.0, 0.0, 10.0], "dist_tratta_m": [np.nan, np.nan, 5000.0, np.nan],
+        "motivo": ["", "", "", ""],
     })
     far = cal.far_pairs(ok)
     assert far["cammino_id"].tolist() == ["c2", "c1"]  # c3 e' sotto la soglia
@@ -234,10 +262,12 @@ def test_costi_e_comuni_sfiorati() -> None:
         "distanza_m": [0.0, 0.0, 120.0, 0.0, 30.0],
         "lunghezza_dentro_m": [900.0, 40.0, 0.0, 70.0, 0.0],
     })
+    all_pairs["dentro"] = all_pairs["distanza_m"] == 0
     costs = cal.cost_table(all_pairs, pd.Series({"cdi": 1, "mitur": 1}))
     assert costs.loc[0, "coppie_totali"] == 3 and costs.loc[0, "aumento_vs_0"] == 0
     assert costs.loc[50, ["coppie_totali", "coppie_cdi", "coppie_mitur", "aumento_vs_0"]].tolist() == [4, 2, 2, 1]
     assert costs.loc[800, "aumento_vs_0_pct"] == pytest.approx(66.67)
+    assert costs.loc[50, ["comuni_per_cammino_cdi", "comuni_per_cammino_mitur"]].tolist() == [2.0, 2.0]
     grazing = cal.grazing_table(all_pairs).set_index("soglia_m")
     assert grazing.loc[50, "coppie_sotto_soglia"] == 1 and grazing.loc[100, "coppie_sotto_soglia"] == 2
     assert grazing.loc[100, "sotto_soglia_cdi"] == 1 and grazing.loc[100, "sotto_soglia_mitur"] == 1
@@ -247,3 +277,56 @@ def test_comando_calibra_chiama_run(monkeypatch: pytest.MonkeyPatch) -> None:
     called: list[bool] = []
     monkeypatch.setattr(cal, "run", lambda: called.append(True))
     assert cli.main(["calibra"]) == 0 and called == [True]
+
+
+# --- errore laterale e comuni a rischio ---
+
+def test_disturbo_gaussiano_e_riproducibile_con_lo_stesso_seme() -> None:
+    methods = cal.degradation_methods()
+    lines = [straight_line(2001, 5.0)]
+    first, second = methods["j25"](lines), methods["j25"](lines)
+    assert first[0].equals(second[0]) and not first[0].equals(lines[0])
+    shifts = np.asarray(first[0].coords) - np.asarray(lines[0].coords)
+    assert shifts.std() == pytest.approx(25, rel=0.05) and abs(shifts.mean()) < 2
+    assert len(first[0].coords) == len(lines[0].coords)  # nessun vertice aggiunto o tolto
+
+
+def test_traslazione_di_lato_porta_tutta_la_linea_alla_distanza_chiesta() -> None:
+    line = LineString([(0, 0), (1000, 0)])
+    left, right = cal.shift_line(line, 25), cal.shift_line(line, -25)
+    assert left.bounds == (0.0, 25.0, 1000.0, 25.0) and right.bounds == (0.0, -25.0, 1000.0, -25.0)
+    methods = cal.degradation_methods()
+    assert methods["o25sx"]([line])[0].bounds[1] == 25 and methods["o25dx"]([line])[0].bounds[1] == -25
+
+
+def test_riferimento_e_comuni_a_rischio_sommano_la_lunghezza_dentro_per_cammino() -> None:
+    original = pd.DataFrame({
+        "gruppo": ["g", "g", "g", "g"], COMUNE: ["A", "A", "B", "C"], "distanza_m": [0.0, 0.0, 0.0, 30.0],
+        "dentro": [True, True, True, False], "lunghezza_dentro_m": [120.0, 150.0, 80.0, 0.0],
+    })
+    reference, marginal = cal.reference_sets(original)
+    assert sorted(reference[COMUNE]) == ["A", "B"]  # C non e' attraversato
+    assert marginal[COMUNE].tolist() == ["B"]  # A: 120 + 150 m, oltre la soglia di 200
+
+
+def test_lato_peggiore_della_traslazione_prende_recall_minimo_ed_extra_massimo() -> None:
+    sx = pd.DataFrame({"recall": [1.0, 0.9], "extra_tot": [0, 3], "recall_marginale": [1.0, 0.5]}, index=[0, 25])
+    dx = pd.DataFrame({"recall": [0.95, 1.0], "extra_tot": [1, 2], "recall_marginale": [0.8, 1.0]}, index=[0, 25])
+    merged = cal.worse_side({"o25sx": sx, "o25dx": dx, "k25": sx})
+    assert set(merged) == {"o25", "k25"}
+    assert merged["o25"].loc[0].tolist() == [0.95, 1, 0.8] and merged["o25"].loc[25].tolist() == [0.9, 3, 0.5]
+
+
+def test_ramo_senza_traccia_solo_con_blocco_contiguo_e_altre_tappe_a_zero() -> None:
+    def rows(cammino: str, distances: list[float]) -> pd.DataFrame:
+        return pd.DataFrame({"cammino_id": cammino, "ordine": range(1, len(distances) + 1), "dist_cammino_m": distances})
+
+    ok = pd.concat([
+        rows("a", [900.0, 800.0, 0.0, 0.0]),  # blocco di due tappe lontane, il resto a 0
+        rows("b", [900.0, 0.0, 800.0, 0.0]),  # lontane non contigue
+        rows("c", [900.0, 0.0, 0.0, 0.0]),  # una sola tappa lontana: non e' un ramo
+        rows("d", [900.0, 800.0, 100.0, 0.0]),  # un'altra tappa e' vicina ma non a zero
+    ], ignore_index=True)
+    motive = cal.far_stage_motive(ok)
+    assert motive[ok["cammino_id"] == "a"].tolist() == [config.MOTIVO_BRANCH, config.MOTIVO_BRANCH, "", ""]
+    assert (motive[ok["cammino_id"].isin(["b", "c", "d"])] == "").all()
