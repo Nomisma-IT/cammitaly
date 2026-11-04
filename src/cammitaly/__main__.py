@@ -1,10 +1,10 @@
-"""Riga di comando: python -m cammitaly all | fetch <fonte> [--limit N] [--refresh] | build <fonte> | calibra | dedup | osm-match | tag | pairs | workbook."""
+"""Riga di comando: python -m cammitaly all | fetch <fonte> [--limit N] [--refresh] | build <fonte> | calibra | dedup | osm-match | tag | pairs | workbook | report-numbers."""
 import argparse
 import sys
 from collections.abc import Callable, Sequence
 from functools import partial
 
-from cammitaly import calibration, dedup, files, http, osm_match, pairs, tags, workbook
+from cammitaly import calibration, dedup, files, http, osm_match, pairs, report_numbers, tags, workbook
 from cammitaly.geometry import cdi
 from cammitaly.geometry import mitur as mitur_tratte
 from cammitaly.geometry import osm as osm_tratte
@@ -32,16 +32,17 @@ STEPS: dict[str, Callable[[], None]] = {
     "tag": lambda: tags.run(),
     "pairs": lambda: pairs.run(),
     "workbook": lambda: workbook.run(),
+    "report-numbers": lambda: report_numbers.run(),
 }
 
 # Ordine di `all`. I download sono indipendenti tra loro: prima quelli che falliscono in pochi secondi (mitur senza le
 # pagine salvate a mano, istat senza l'edizione dell'anno), poi i lunghi. Poi le tratte dei tre cataloghi (cdi richiede
 # camminiditalia e webmapp, mitur le tracce mitur, osm il pbf). tag legge le tratte e le schede; osm-match legge le
 # tratte dei tre cataloghi; dedup legge le geometrie scritte da osm-match; pairs legge etichette, dedup e abbinamenti;
-# workbook legge pairs.
+# workbook legge pairs; report-numbers legge tutte le uscite, cartella di lavoro compresa.
 ALL_FETCH = ("mitur", "istat", "camminiditalia", "webmapp", "osm")
 ALL_BUILD = ("cdi", "mitur", "osm")
-ALL_STEPS = ("tag", "osm-match", "dedup", "pairs", "workbook")
+ALL_STEPS = ("tag", "osm-match", "dedup", "pairs", "workbook", "report-numbers")
 
 
 class PipelineError(RuntimeError):
@@ -83,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("tag", help="etichetta tratte e cammini per mezzo e carattere religioso")
     commands.add_parser("pairs", help="calcola i comuni attraversati da ogni cammino distinto, in ordine di percorso")
     commands.add_parser("workbook", help="scrive la cartella di lavoro Excel dei comuni attraversati dai cammini")
+    commands.add_parser("report-numbers", help="calcola dai dati prodotti tutti i numeri citati dal rapporto metodologico")
     return parser
 
 
@@ -99,6 +101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             STEPS[args.command]()
     except (
         PipelineError, http.FetchError, files.UnsafeArchiveError, tags.TagError, pairs.PairsError, workbook.WorkbookError,
+        report_numbers.ReportNumbersError,
     ) as error:
         print(f"ERRORE: {error}", file=sys.stderr)
         return 2

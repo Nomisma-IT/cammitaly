@@ -7,12 +7,12 @@ from datetime import date
 import pytest
 
 from cammitaly import __main__ as cli
-from cammitaly import dedup, http, osm_match, pairs, tags, workbook
+from cammitaly import dedup, http, osm_match, pairs, report_numbers, tags, workbook
 
 EXPECTED_ORDER = [
     "fetch mitur", "fetch istat", "fetch camminiditalia", "fetch webmapp", "fetch osm",
     "build cdi", "build mitur", "build osm",
-    "tag", "osm-match", "dedup", "pairs", "workbook",
+    "tag", "osm-match", "dedup", "pairs", "workbook", "report-numbers",
 ]
 
 
@@ -31,7 +31,7 @@ def _record_all_steps(monkeypatch: pytest.MonkeyPatch, fail_at: str | None = Non
         monkeypatch.setitem(cli.SOURCES, source, recorder(f"fetch {source}"))
     for source in cli.ALL_BUILD:
         monkeypatch.setitem(cli.BUILDERS, source, recorder(f"build {source}"))
-    for module, name in ((tags, "tag"), (osm_match, "osm-match"), (dedup, "dedup"), (pairs, "pairs"), (workbook, "workbook")):
+    for module, name in ((tags, "tag"), (osm_match, "osm-match"), (dedup, "dedup"), (pairs, "pairs"), (workbook, "workbook"), (report_numbers, "report-numbers")):
         monkeypatch.setattr(module, "run", recorder(name))
     return calls
 
@@ -70,7 +70,7 @@ def test_all_passa_le_opzioni_di_default_ai_download(monkeypatch: pytest.MonkeyP
         monkeypatch.setitem(cli.SOURCES, source, lambda *args: received.append(args))
     for source in cli.ALL_BUILD:
         monkeypatch.setitem(cli.BUILDERS, source, lambda: None)
-    for module in (tags, osm_match, dedup, pairs, workbook):
+    for module in (tags, osm_match, dedup, pairs, workbook, report_numbers):
         monkeypatch.setattr(module, "run", lambda: None)
     assert cli.main(["all"]) == 0
     assert received == [(None, False)] * len(cli.ALL_FETCH)
@@ -82,7 +82,7 @@ def test_all_refresh_passa_refresh_a_ogni_download(monkeypatch: pytest.MonkeyPat
         monkeypatch.setitem(cli.SOURCES, source, lambda *args: received.append(args))
     for source in cli.ALL_BUILD:
         monkeypatch.setitem(cli.BUILDERS, source, lambda: None)
-    for module in (tags, osm_match, dedup, pairs, workbook):
+    for module in (tags, osm_match, dedup, pairs, workbook, report_numbers):
         monkeypatch.setattr(module, "run", lambda: None)
     assert cli.main(["all", "--refresh"]) == 0
     assert received == [(None, True)] * len(cli.ALL_FETCH)

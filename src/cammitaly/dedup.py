@@ -1,4 +1,4 @@
-"""Deduplicazione dei cammini di camminiditalia.org e del Catalogo MiTur: regola del committente (D-12).
+"""Deduplicazione dei cammini di camminiditalia.org e del Catalogo MiTur: regola del committente.
 
 Regola, con la quota del piu' corto entro DEDUP_NEAR_M metri dall'altro (soglie in config):
 - nomi simili: quota >= DEDUP_OVERLAP_MIN duplicato; sotto DEDUP_DISTINCT_BELOW (due geometrie presenti) distinto; in
@@ -218,7 +218,7 @@ ADOPTED = Thresholds()
 
 
 def classify(pairs: pd.DataFrame, thresholds: Thresholds = ADOPTED) -> pd.DataFrame:
-    """Colonne classe e motivo di ogni coppia con le soglie date (la regola D-12 e la griglia di sensibilita' usano questa).
+    """Colonne classe e motivo di ogni coppia con le soglie date (la regola del committente e la griglia di sensibilita' usano questa).
 
     La soglia della sezione viene da config: non varia nella griglia. Ordine delle regole: la prima vera vince.
     """
@@ -251,7 +251,7 @@ def classify(pairs: pd.DataFrame, thresholds: Thresholds = ADOPTED) -> pd.DataFr
 
 def coppie_frame(pairs: pd.DataFrame) -> pd.DataFrame:
     """coppie.csv: i candidati (nome simile alla soglia piu' bassa della griglia, o tracciati che si toccano) con la classe
-    della regola adottata (D-12, soglie ADOPTED)."""
+    della regola adottata (soglie ADOPTED)."""
     near = ADOPTED.near_m
     quota_minore = minor_share(pairs, near)
     # minimum/maximum propagano NaN: senza una delle due geometrie il rapporto resta vuoto
@@ -478,7 +478,7 @@ def quasi_row(pair: pd.Series, lines: Lines, tratte_of: Mapping[str, pd.DataFram
 def quasi_frame(pairs: pd.DataFrame, lines: Lines, tratte: gpd.GeoDataFrame) -> pd.DataFrame:
     """Coppie con nome simile e quota minore tra DEDUP_QUASI_OVERLAP_MIN e DEDUP_QUASI_OVERLAP_MAX, con la diagnosi dei tratti lontani.
 
-    Si parte dalla tabella delle coppie (quote non arrotondate). Non dipende dalla classe: con la regola D-12 molte di
+    Si parte dalla tabella delle coppie (quote non arrotondate). Non dipende dalla classe: con la regola del committente molte di
     queste coppie sono duplicati, ma il perche' del tratto lontano resta utile.
     """
     near = config.DEDUP_NEAR_M

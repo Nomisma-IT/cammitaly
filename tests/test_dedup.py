@@ -33,7 +33,7 @@ def coppie_of(entries: list[tuple[str, str, str]], lines: dict) -> pd.DataFrame:
     return dedup.coppie_frame(pairs).set_index(["cammino_a", "cammino_b"])
 
 
-# --- classi (regola D-12) ---
+# --- classi (regola del committente) ---
 
 def test_stesso_nome_con_tracciato_identico_o_traslato_di_30_m_e_duplicato_di_80_m_e_distinto() -> None:
     entries = [("cdi:1", "cdi", "Via Alfa"), ("mitur:2", "mitur", "Via Alfa"), ("mitur:3", "mitur", "Cammino Alfa")]
@@ -187,7 +187,7 @@ def test_punteggio_cento_per_inclusione_e_segnalato_e_il_tracciato_decide() -> N
     assert identical["punteggio_nome"] == 100 and not identical["nome_contenuto"] and identical["classe"] == DUPLICATO
 
 
-# --- sezioni (D-12, regola 2) ---
+# --- sezioni (regola del committente, regola 2) ---
 
 def test_tracciato_contenuto_al_95_con_una_parola_in_comune_e_sezione_senza_parole_in_comune_e_limbo() -> None:
     entries = [

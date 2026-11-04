@@ -1,0 +1,386 @@
+% Rapporto esecutivo: compilare con xelatex (tre passaggi).
+
+% Configurazione
+\newcommand{\ReportLang}{italian}
+\newcommand{\ReportBrand}{Nomisma}
+\newcommand{\ReportProject}{Cammini italiani}
+\newcommand{\ReportTitle}{212 cammini italiani e i 3.411 comuni che attraversano}
+\newcommand{\ReportSubtitle}{Come è costruita la cartella di lavoro, come si legge e quanto valgono i suoi numeri}
+\newcommand{\ReportAuthor}{Alberto Berni}
+\newcommand{\ReportRole}{Junior Data Engineer}
+\newcommand{\ReportDate}{4 novembre 2026}
+
+\input{report-base}
+
+% Riferimenti incrociati in italiano
+\crefname{section}{Sezione}{Sezioni}
+\Crefname{section}{Sezione}{Sezioni}
+\crefname{subsection}{Sezione}{Sezioni}
+\Crefname{subsection}{Sezione}{Sezioni}
+\crefname{table}{Tabella}{Tabelle}
+\Crefname{table}{Tabella}{Tabelle}
+\crefname{appendix}{Appendice}{Appendici}
+\Crefname{appendix}{Appendice}{Appendici}
+\newcommand{\crefpairconjunction}{ e }
+\newcommand{\crefmiddleconjunction}{, }
+\newcommand{\creflastconjunction}{ e }
+\newcommand{\crefrangeconjunction}{ - }
+% Spazio minimo prima dei titoli senza penalità negativa: con il fondo pagina libero la penalità
+% del pacchetto needspace fa andare a capo pagina a ogni titolo, anche quando lo spazio basta
+\makeatletter
+\renewcommand{\needspace}[1]{\par\begingroup\setlength{\dimen@}{#1}\dimen@ii\pagegoal
+  \advance\dimen@ii-\pagetotal\ifdim\dimen@>\dimen@ii\ifdim\dimen@ii>\z@\vfil\fi\break\fi\endgroup}
+% Pagine di sole tabelle: tabelle dall'alto, spazio fisso tra l'una e l'altra
+\setlength{\@fptop}{0pt}
+\setlength{\@fpsep}{14pt plus 2pt}
+\setlength{\@fpbot}{0pt plus 1fil}
+\makeatother
+
+\begin{document}
+
+\maketitleblock
+
+\section{In sintesi}
+
+Abbiamo costruito l'elenco dei cammini italiani e dei comuni che ciascuno attraversa, in una cartella di lavoro Excel che si legge per comune o per cammino. Per farlo abbiamo incrociato le 263 schede di due cataloghi, camminiditalia.org e il Catalogo dei cammini religiosi del Ministero del Turismo, con le loro tracce GPS, con i 35.699 percorsi registrati in OpenStreetMap e con i confini dei 7.896 comuni ISTAT. Ogni regola è scritta nel codice e provata sui dati, senza classificazioni a mano, e l'intero processo si ripete ogni anno con un solo comando.
+
+\begin{riquadro}
+\begin{itemize}
+\item \textbf{Cammini distinti}: 212, contando una volta sola lo stesso cammino pubblicato da più fonti; 142 hanno carattere religioso.
+\item \textbf{Comuni attraversati}: 3.411, il 43,2\% dei comuni italiani, per 5.095 coppie cammino e comune; il tracciato tocca o entra nel comune in 4.830 coppie e lo sfiora entro 100 metri nelle altre 265.
+\item \textbf{Completezza dei tracciati}: 191 cammini hanno un tracciato, con una copertura mediana del 98\% della lunghezza dichiarata (metà dei cammini ne ha una più alta); 21 non ne hanno nessuno e restano nell'elenco senza comuni.
+\item \textbf{Controlli}: un ricalcolo indipendente dei 212 cammini ha trovato le stesse 5.095 coppie, con zero differenze; il codice supera 663 test automatici.
+\end{itemize}
+\end{riquadro}
+
+\tableofcontents
+
+\section{Il punto di partenza}\label{sec:partenza}
+
+Questa sezione fissa la domanda, l'oggetto del lavoro e le tre definizioni da cui dipendono tutti i numeri della cartella di lavoro.
+
+La domanda è territoriale: per ogni comune italiano, quali cammini lo attraversano; per ogni cammino, quali comuni attraversa e in che ordine. Ogni coppia porta due caratteristiche del cammino: se si percorre a piedi, in bici o in entrambi i modi, e se ha carattere religioso. La cartella di lavoro è pensata per chi ragiona per territorio: un comune si cerca per nome o per codice ISTAT e si legge subito quanti e quali cammini lo toccano.
+
+La cartella di lavoro ha tre fogli di dati e uno di spiegazioni: Comuni (una riga di totale per comune, con il dettaglio per mezzo e carattere religioso), Cammini (una riga per cammino distinto, con i comuni nell'ordine del percorso), Coppie (una riga per ogni coppia cammino e comune) e Note (il dizionario delle colonne).
+
+La cartella di lavoro alimenta le analisi e le mappe di Nomisma sui cammini per comune, per regione e per l'Italia nel suo insieme. Le etichette di mezzo e carattere religioso permettono di dividere ciascuno di questi conteggi, ad esempio per contare i comuni attraversati soltanto da cammini religiosi a piedi. Per chi la riceve, ogni numero territoriale si ottiene quindi filtrando e sommando i fogli, senza rifare l'incrocio con i confini.
+
+Le definizioni adottate sono tre.
+
+\begin{itemize}
+\item \textbf{Cammino.} Un percorso pubblicato come cammino da camminiditalia.org o dal Catalogo dei cammini religiosi italiani del Ministero del Turismo, le due fonti di catalogo. OpenStreetMap non aggiunge cammini: fornisce tracciati e indicazioni per cammini già in catalogo (\cref{sec:osm}).
+\item \textbf{Cammino distinto.} Lo stesso cammino pubblicato da più fonti, o una sua sezione pubblicata a parte, è una sola riga e si conta una volta; i nomi delle altre versioni restano nella colonna Altri nomi (\cref{sec:dedup}). Ogni conteggio di cammini del rapporto e della cartella di lavoro è un conteggio di cammini distinti.
+\item \textbf{Attraversa.} Un cammino attraversa un comune se il suo tracciato passa a non più di 100 metri dal confine comunale: il comune è quindi attraversato oppure sfiorato (\cref{sec:attraversa}).
+\end{itemize}
+
+Il risultato doveva garantire tre cose. La prima è il rinnovo annuale con un solo comando, che scarica di nuovo le fonti e ricostruisce la cartella di lavoro; resta a mano un solo passaggio, il salvataggio delle pagine di elenco del Ministero (\cref{sec:fonti}). La seconda è l'assenza di classificazioni manuali: ogni scelta è una regola scritta nel codice, con la sua soglia e il suo motivo, così che l'anno prossimo gli stessi dati diano lo stesso risultato; i casi dubbi non si risolvono a mano ma si segnalano nella colonna Nota. La terza è la tracciabilità: ogni cammino della cartella di lavoro riporta i suoi codici presso le fonti e la fonte del tracciato da cui sono stati letti i comuni.
+
+\section{Come funziona il metodo}\label{sec:metodo}
+
+Il metodo trasforma cataloghi e tracce GPS di fonti diverse in un elenco di cammini distinti, ciascuno con il suo tracciato, e incrocia ogni tracciato con i confini comunali ISTAT. Le sottosezioni seguono l'ordine in cui il programma esegue i passi; la \cref{tab:parametri} in appendice raccoglie tutte le soglie con il loro motivo.
+
+\subsection{Le fonti}\label{sec:fonti}
+
+Le fonti decidono quali cammini compaiono nella cartella di lavoro e da quale tracciato si leggono i loro comuni. Nessuna fonte basta da sola: camminiditalia.org ha il catalogo nazionale più ampio, anche di cammini non religiosi, con le tracce delle tappe sulla sua mappa; il Catalogo del Ministero è l'elenco ufficiale dei cammini religiosi, con tracce proprie per 99 schede su 127; OpenStreetMap ha i tracciati di molti cammini che i cataloghi pubblicano senza traccia; ISTAT dà i confini e i codici dei comuni. La \cref{tab:fonti} riporta per ciascuna che cosa contiene, perché la usiamo, la data e la copertura.
+
+\begin{table}[!htbp]
+\begin{tabella}
+\caption{Le fonti dei dati}\label{tab:fonti}
+\begin{tabularx}{\linewidth}{|P{2.9cm}|L|P{3.4cm}|P{4.1cm}|}
+\hline
+\rowcolor{navy}\hd{Fonte} & \hd{Che cosa contiene} & \hd{Perché la usiamo} & \hd{Copertura e note}\\ \hline
+camminiditalia.org (portale Cammini d'Italia) & Schede dei cammini: lunghezza, tappe, partenza e arrivo, regioni, tipologia, portata, tema, stagione & Catalogo nazionale più ampio, anche non religioso; dà il comune di partenza da cui si ordinano i comuni & 136 cammini; scaricato il 3 novembre 2026. Dati di Cammini d'Italia S.R.L., usati in base al contratto «Commercial Data License Agreement and API access term» stipulato con Nomisma: Nomisma può condividerli con i propri partner, che non possono ridistribuirli\\ \hline
+Mappa Cammini d'Italia (app dello stesso portale) & Tracce GPS delle tappe dei cammini del portale & Tracciato tappa per tappa, con varianti & 1.315 tracce; scaricata il 3 novembre 2026; stesse condizioni d'uso del portale; servizio senza documentazione pubblica, da verificare a ogni rinnovo\\ \hline
+Ministero del Turismo, Catalogo dei cammini religiosi italiani & Schede con nome, regioni, data e decreto di inserimento; archivi di tracce GPX, KML e KMZ & Elenco ufficiale dei cammini religiosi; tracce proprie & 127 schede, 99 con tracce scaricabili; pagine di elenco salvate a mano, archivi scaricati il 3 novembre 2026; licenza dei file non dichiarata, fonte citata\\ \hline
+OpenStreetMap, estratto Italia di Geofabrik & Relazioni di percorso escursionistico e di pellegrinaggio & Tracciato per i cammini senza traccia propria; indicazione di pellegrinaggio & 35.699 relazioni; scaricato il 3 novembre 2026, controllato con la sua impronta md5; licenza ODbL, © OpenStreetMap contributors\\ \hline
+ISTAT, confini delle unità amministrative a fini statistici & Confini dei comuni, delle province e delle regioni al 1 gennaio 2026, versione non generalizzata & Unità dell'incrocio; codici e nomi ufficiali & 7.896 comuni; scaricati il 3 novembre 2026; licenza CC BY 4.0, fonte ISTAT\\ \hline
+\end{tabularx}
+\end{tabella}
+\end{table}
+
+I confini ISTAT esistono anche in versione generalizzata, più leggera, che semplifica il disegno dei confini: l'abbiamo scartata perché la regola dei 100 metri misura proprio la distanza dal confine, e un confine semplificato la sposterebbe. L'elenco delle tracce della mappa Cammini d'Italia riporta partenza, arrivo e distanza di ogni traccia, ma per una parte delle tracce questi campi sono vuoti o non affidabili: lunghezze e comuni si ricavano quindi sempre dalla geometria. Le pagine di elenco del Ministero sono protette da un controllo del browser che impedisce la lettura da programma: invece di aggirarlo, le pagine si salvano a mano, ed è l'unico passaggio manuale del processo; gli archivi delle tracce sono file pubblici e si scaricano da programma.
+
+\subsection{I tracciati}\label{sec:tracciati}
+
+I tracciati sono la base di tutto il resto: da loro dipendono i comuni attraversati, il loro ordine e le lunghezze. Questo passo rende confrontabili le tracce delle tre fonti e toglie gli errori che altrimenti aggiungerebbero comuni che il cammino non tocca.
+
+L'unità di lavoro è la \emph{tratta}: un file di traccia o, per la mappa Cammini d'Italia, una tappa. Ogni tratta ha un tipo, riconosciuto dal nome del file o della traccia e dalla cartella in cui è pubblicata: \emph{tappa} (ha un numero di tappa), \emph{variante} (ad esempio “Tappa 03bis” o “variante invernale”), \emph{bici} (“MTB”, “in bici”) e \emph{altro} (un percorso intero o una traccia senza numero di tappa). Tutti i tipi contribuiscono ai comuni del cammino: le varianti ufficiali fanno parte del cammino, e i tracciati in bici restano, per decisione di Nomisma, ed entrano nell'etichetta del mezzo (\cref{sec:etichette}).
+
+Ogni tratta passa per la stessa pulizia. Si toglie la quota e si proietta la traccia nel sistema di coordinate metrico dei confini ISTAT, così che tutte le distanze siano in metri. Un salto di oltre 10 chilometri tra due punti consecutivi è un errore di registrazione e non un tratto percorso: la traccia si spezza lì, perché il segmento dritto aggiungerebbe i comuni che taglia e la sua lunghezza gonfierebbe quella del cammino.
+
+Le tracce della mappa Cammini d'Italia si attribuiscono ai cammini tramite lo strato della mappa citato nella scheda del cammino. Quando uno strato è condiviso da più cammini, la traccia va al cammino il cui titolo somiglia di più al nome della traccia. La somiglianza è un punteggio da 0 a 100 che confronta i nomi parola per parola: 100 vuol dire stesse parole, oppure un nome contenuto nell'altro; una sola lettera diversa in una parola di otto lettere (“Normanna” e “Normanno”) vale 87,5. Qui serve almeno 85, e i candidati entro 4 punti dal migliore ricevono tutti la traccia. Una traccia senza strato si recupera solo con un nome quasi identico (almeno 95) e solo se non ripete una tappa che il cammino ha già.
+
+Gli archivi del Ministero contengono file GPX, KML e KMZ, spesso con più copie della stessa tappa, e danno 1.281 tratte. I file con soli punti (punti di interesse, senza linea) non sono tracciati e si scartano: sono 73. Due tratte dello stesso cammino sono la stessa tappa se nessun punto dell'una dista più di 25 metri dall'altra e le lunghezze differiscono meno del 5\%: se ne tiene una, e le copie scartate sono 171. Un file che contiene l'intero percorso accanto alle tappe diventa di tipo altro, così da non contare due volte le tappe: lo si riconosce dal nome (“completo”, “intero”) oppure dal contenuto, quando è lungo almeno il doppio della tappa mediana del cammino e contiene entro 25 metri almeno tre tappe, ciascuna non oltre il 75\% della sua lunghezza e tutte insieme almeno il 60\%. Anche una tappa di oltre 100 chilometri diventa di tipo altro, perché è un percorso intero con un nome da tappa. Si scartano i tracciati che cadono fuori dal riquadro che contiene l'Italia con le isole. Quando due schede rimandano allo stesso archivio, l'archivio va alla scheda il cui nome somiglia di più al nome del file (almeno 80, con almeno 10 punti di vantaggio sulla seconda).
+
+In ultimo, la lunghezza di ogni tappa si confronta con la distanza dichiarata dalla fonte. Un rapporto fuori dall'intervallo da metà al doppio segnala una traccia sospetta, ad esempio troncata: la segnalazione si conserva insieme ai dati intermedi e la traccia non si corregge, perché correggerla richiederebbe una scelta manuale.
+
+\subsection{Quando un cammino attraversa un comune}\label{sec:attraversa}
+
+Questa regola decide quali coppie cammino e comune entrano nella cartella di lavoro ed è la scelta che pesa di più sui numeri. Un comune è associato a un cammino se il tracciato passa a non più di 100 metri dal suo confine; a distanza zero il tracciato tocca o entra nel comune.
+
+Una distanza zero sarebbe la regola più semplice, ma una traccia GPS non coincide con il sentiero: una parte dell'errore di registrazione è sistematica, cioè sposta la linea dalla stessa parte su lunghi tratti, e un cammino che corre lungo un confine o lo sfiora per pochi metri perderebbe o guadagnerebbe comuni per puro errore di misura. Una distanza troppo larga, al contrario, aggiunge i comuni confinanti che il cammino non tocca. La distanza di 100 metri è stata decisa da Nomisma sulla base di quattro prove sui dati, riassunte nella \cref{tab:taratura}.
+
+\begin{itemize}
+\item \textbf{Estremi di tappa pubblicati.} Le fonti nominano partenza e arrivo di ogni tappa; quando il nome è quello di un comune, il tracciato deve raggiungerlo. Il richiamo, cioè la quota di questi comuni raggiunti dal tracciato, sulle 1.676 coppie tra tappa e comune vale il 98,69\% a distanza zero e il 99,05\% a 100 metri, e oltre non cresce più. I casi residui non dipendono dalla distanza scelta: sono 37 coppie oltre 400 metri, misurate sulla tappa o sull'intero cammino, e per 17 si tratta di rami che il sito elenca ma di cui non esiste la traccia.
+\item \textbf{Tracce degradate.} Su 61 tappe molto fitte di 22 cammini (un punto ogni 10 metri o meno) abbiamo simulato tracce peggiori: meno punti, disturbo casuale su ogni punto, spostamento di tutta la linea di 25 e di 50 metri. Solo lo spostamento fa perdere comuni: con 50 metri il richiamo sui 155 comuni attraversati scende al 96,77\% a distanza zero e torna pieno da 50 metri. La distanza deve quindi superare l'errore sistematico plausibile di una traccia.
+\item \textbf{Stesso cammino in due fonti.} Su 12 cammini pubblicati da entrambi i cataloghi con lunghezza simile, il tracciato di una fonte ritrova il 97,1\% dei comuni dell'altra a ogni distanza; i comuni in più crescono invece con la distanza: in tutto 1 a distanza zero, 14 a 100 metri e 59 a 800 metri.
+\item \textbf{Costo.} Rispetto alla distanza zero, le coppie cammino e comune aumentano del 5,35\% a 100 metri e del 26,06\% a 800 metri (misurate sui cammini del catalogo prima della fusione: da 5.998 a 6.319 e a 7.561 coppie).
+\end{itemize}
+
+\begin{table}[!htbp]
+\begin{tabella}
+\caption{Le distanze considerate e che cosa avrebbero prodotto}\label{tab:taratura}
+\begin{tabularx}{\linewidth}{|P{2.2cm}|L|}
+\hline
+\rowcolor{navy}\hd{Distanza} & \hd{Effetto sui dati}\\ \hline
+0 m & Perde i comuni appena sfiorati e quelli persi per uno spostamento sistematico della traccia\\ \hline
+25-50 m & Recupera uno spostamento fino a 50 metri, ma il richiamo degli estremi di tappa cresce ancora\\ \hline
+\textbf{100 m (scelta)} & Il richiamo smette di crescere in tutte le prove, con un aumento contenuto delle coppie\\ \hline
+200-800 m & Nessun comune recuperato in più; solo comuni confinanti in più\\ \hline
+\end{tabularx}
+\end{tabella}
+\end{table}
+
+Le prove sono state fatte sui tracciati a piedi; i tracciati in bici seguono la stessa regola. La regola dei 100 metri comprende per costruzione anche comuni che il tracciato sfiora senza toccarli: la colonna Dentro il comune del foglio Coppie li distingue (\cref{sec:limiti}).
+
+\FloatBarrier
+
+\subsection{Lo stesso cammino in più fonti}\label{sec:dedup}
+
+Questa regola decide quante righe ha il foglio Cammini e quindi quanti cammini conta ogni comune: senza di essa, lo stesso cammino pubblicato da camminiditalia.org e dal Ministero si conterebbe due volte. Abbiamo confrontato tra loro tutte le 263 schede delle due fonti di catalogo, anche dentro la stessa fonte (34.453 confronti).
+
+Due schede descrivono lo stesso cammino quando sono simili sia nel nome sia nel tracciato.
+
+\begin{itemize}
+\item \textbf{Il nome.} Dal nome si tolgono articoli, preposizioni e le parole generiche dei percorsi (cammino, via, sentiero, percorso, itinerario, strada); i santi restano, perché “Cammino di San Carlo” e “Cammino di Carlo Magno” sono cammini diversi. I due nomi così ridotti sono simili con un punteggio di almeno 95 su 100 (il punteggio della \cref{sec:tracciati}). Sui dati nessuna coppia ha un punteggio tra 87,5 e 100: il più alto sotto 100 è 87,5, quello di “Normanna” e “Normanno”, due cammini diversi. Ogni soglia sopra 87,5 e fino a 100 dà quindi lo stesso risultato, e 95 lascia margine da entrambe le parti.
+\item \textbf{Il tracciato.} Si misura quanta parte del tracciato più corto sta entro 50 metri dall'altro, campionandolo ogni 10 metri. Almeno il 70\%: lo stesso cammino. Meno del 50\%: cammini distinti che condividono un nome. Tra il 50\% e il 70\% la coppia resterebbe separata con la nota “possibile duplicato”; sui dati nessuna coppia cade in questa fascia (la più alta dei distinti è al 46\%, la più bassa dei duplicati al 71\%).
+\item \textbf{Le sezioni.} Un cammino contenuto per almeno il 95\% in un altro, con almeno una parola in comune nel nome, è una sezione dell'intero e si fonde in esso, con il proprio nome tenuto tra gli Altri nomi.
+\item \textbf{Un tracciato mancante.} Se una delle due schede ha un nome simile ma nessun tracciato, il confronto non si può fare: restano due cammini, ciascuno con la nota “possibile duplicato” che cita l'altro.
+\end{itemize}
+
+Un cammino fuso tiene l'unione dei tracciati di tutte le sue versioni, quindi i suoi comuni sono quelli di tutte le versioni. La soglia del 70\% è la scelta meno ovvia; le soglie del 70\% e del 50\% sono state decise da Nomisma sulla base di queste prove. Una regola più severa, con il 95\% del tracciato più corto sull'altro, non avrebbe riconosciuto 19 coppie con lo stesso nome: in 7 una fonte ha una variante in più, come la Via Fabaria, in 10 una versione diversa del percorso su alcuni chilometri, in 2 mancano alcune tappe; con il 70\% queste coppie si fondono. Provando 180 combinazioni di soglie, le coppie riconosciute come duplicati vanno da 30 a 42, contro le 37 delle soglie adottate. Sotto il 50\% le coppie osservate sono percorsi diversi dello stesso gruppo di nomi, come il Cammino di Assisi del Ministero e i diversi cammini di camminiditalia.org che hanno Assisi nel nome. Il risultato: 212 cammini distinti, di cui 46 nati da più schede (36 schede fuse come duplicati e 15 come sezioni).
+
+\subsection{Abbinamento con OpenStreetMap}\label{sec:osm}
+
+OpenStreetMap serve a due cose: dare un tracciato ai cammini che i cataloghi pubblicano senza traccia e aggiungere l'indicazione di pellegrinaggio. Non aggiunge cammini né sostituisce le tracce dei cataloghi: un cammino con una traccia propria tiene sempre quella. Ogni scheda di catalogo si confronta con le 35.699 relazioni di percorso dell'estratto: le relazioni sono gli oggetti con cui OpenStreetMap descrive un percorso.
+
+Per un cammino con tracce, una relazione di OpenStreetMap è lo stesso cammino quando il nome è simile (stessa soglia di 95 della \cref{sec:dedup}) e almeno il 70\% di un tracciato sta entro 50 metri dall'altro; la quota deve valere in entrambe le direzioni (del tracciato sulla relazione e della relazione sul tracciato), oppure in una sola con la lunghezza della relazione tra metà e una volta e mezza quella del cammino. Una relazione molto più lunga contiene il cammino ma non è il cammino (ad esempio un itinerario europeo), una molto più corta ne copre un tratto: in entrambi i casi l'abbinamento si scarta.
+
+Per un cammino senza tracce il confronto geometrico non è possibile e le condizioni sono più strette. Il nome deve avere le stesse parole, o contenere l'altro con almeno due parole: una parola sola come “Maria” darebbe punteggio pieno con ogni nome che la usa. Almeno l'80\% della relazione deve stare nelle regioni che il catalogo dichiara per il cammino, e la lunghezza deve stare tra metà e una volta e mezza quella dichiarata (senza lunghezza dichiarata, almeno 5 chilometri, la lunghezza del cammino più corto del catalogo). Relazioni vicine meno di 500 metri sono tappe dello stesso percorso e si uniscono; se due gruppi distinti passano tutte le condizioni, l'abbinamento è ambiguo e non si usa.
+
+In entrambi i casi, tra relazioni annidate (una contenuta per almeno il 95\% in un'altra) resta la più esterna. Le schede abbinate sono 137 su 263, con 204 relazioni; tra le abbinate, la lunghezza di OpenStreetMap divisa per quella del catalogo ha mediana 1,00. Il tracciato di OpenStreetMap entra in 10 cammini distinti: per 6 è l'unico disponibile, per 4 affianca le tracce di catalogo di un'altra loro versione. La colonna Fonte del tracciato lo dichiara per ogni cammino.
+
+\subsection{Mezzo e carattere religioso}\label{sec:etichette}
+
+Queste due etichette dividono i conteggi del foglio Comuni nelle righe di dettaglio e sono i filtri principali di tutti i fogli.
+
+Il \textbf{mezzo} è quello con cui la fonte pubblica ogni tracciato: a piedi, in bici, oppure per entrambi quando la fonte lo presenta per chi cammina e per chi pedala (ad esempio una relazione di OpenStreetMap che appartiene anche a una rete ciclabile). Quando più tracciati si combinano vince il valore più inclusivo: se sono tutti a piedi il risultato è a piedi, se sono tutti in bici è in bici, in ogni altro caso è a piedi e in bici. La combinazione si fa per cammino e, separatamente, per ogni comune, usando solo i tracciati che passano entro 100 metri da quel comune: un cammino a piedi e in bici nel complesso può risultare solo a piedi in un comune dove passa soltanto la sua traccia pedonale.
+
+Dei 212 cammini distinti, 199 risultano a piedi e 13 a piedi e in bici; nessuno è solo in bici.
+
+Il \textbf{carattere religioso} vale Sì se almeno una fonte lo indica: l'appartenenza al Catalogo dei cammini religiosi del Ministero, il tema spirituale su camminiditalia.org o sulla mappa Cammini d'Italia, l'indicazione di pellegrinaggio su OpenStreetMap. Vale Sì anche quando il nome di una scheda di camminiditalia.org contiene una parola religiosa e nessuna fonte la indica come religiosa; per le schede del Ministero il nome non serve, perché il Catalogo è già un'indicazione, e i nomi di OpenStreetMap non si usano (parole religiose, tra le altre: San, Santa, Madonna, eremo, abbazia, pellegrino, Francigena, Romea; elenco completo nella \cref{tab:parametri}). Basta un'indicazione, perché il silenzio di una fonte non è un no. La colonna Indicazione del carattere religioso dice per ogni cammino da che cosa risulta il Sì. Sui 142 cammini religiosi, l'appartenenza al Catalogo del Ministero vale per 127, il tema spirituale di camminiditalia.org per 38, quello della mappa per 26, il pellegrinaggio di OpenStreetMap per 26 e il nome di una scheda di camminiditalia.org per 12; il nome è l'unica indicazione per 3 cammini.
+
+\subsection{L'ordine dei comuni lungo il percorso}\label{sec:ordine}
+
+L'ordine decide le colonne Comune 1, Comune 2 e seguenti del foglio Cammini e la colonna Ordine lungo il cammino del foglio Coppie: permette di leggere un cammino dalla partenza all'arrivo.
+
+Per ogni cammino si costruisce una linea continua, la dorsale, che unisce le tappe della sua versione più lunga nell'ordine in cui si percorrono. Dopo ogni tappa segue quella che comincia a meno di 500 metri dalla fine della linea; se sono più d'una, quella con il numero più basso, così che il rumore del GPS non scavalchi la numerazione; se nessuna comincia così vicino, come al passaggio da un ramo a un altro, la più vicina. La dorsale parte dal comune di partenza pubblicato dalla fonte, quando questo è tra i comuni del cammino. Per una sezione fusa in un cammino più lungo, la sua partenza vale solo se sta a un capo del percorso intero (entro 2 chilometri), perché una sezione che comincia a metà percorso non dice dove comincia il cammino. In mancanza di entrambe, si parte dalla tappa con il numero più basso.
+
+La dorsale si percorre a passi di 10 metri. Un comune attraversato prende la posizione del primo punto in cui il tracciato vi entra, uno solo sfiorato la posizione del primo punto entro 100 metri. Con passi di 10 metri due comuni possono scambiarsi di posto solo se il tracciato li raggiunge a meno di 15 metri l'uno dall'altro. Un cammino con più rami si legge un ramo dopo l'altro; per i tracciati presi da OpenStreetMap senza una partenza pubblicata il verso non è garantito (\cref{sec:limiti}).
+
+\subsection{Lunghezze e copertura}\label{sec:lunghezze}
+
+Le tre colonne di lunghezza del foglio Cammini dicono quanta parte del cammino dichiarato ha davvero un tracciato, e quindi quanto è completo il suo elenco di comuni.
+
+La \textbf{lunghezza dichiarata} è quella pubblicata dalla fonte della versione misurata. La \textbf{lunghezza del tracciato} è quella delle tappe di quella versione, con le parti ripetute contate una volta: un tratto entro 50 metri da uno già contato, come una copia o un'alternativa sullo stesso corridoio, non si somma. La \textbf{copertura} è il rapporto tra le due, con un massimo di 1: un tracciato più lungo della scheda indica un disaccordo tra le fonti, non una copertura maggiore. Se il cammino ha più versioni si usa quella con la copertura più alta. Una copertura di 0,6 vuol dire che per il 40\% della lunghezza dichiarata non c'è traccia, e i comuni di quel tratto mancano.
+
+\subsection{I controlli}\label{sec:controlli}
+
+Questa parte dice come sono stati controllati i numeri: due controlli indipendenti dal codice (il ricalcolo dell'incrocio e il confronto con gli arrivi pubblicati), più controlli automatici, test e revisioni.
+
+\begin{itemize}
+\item \textbf{Ricalcolo indipendente.} Abbiamo ricalcolato da capo i comuni di tutti i 212 cammini partendo dalle tracce grezze, con un metodo diverso e più lento: la distanza esatta di ogni tracciato da ogni comune vicino, senza le scorciatoie del calcolo principale. Il ricalcolo ha trovato le stesse 5.095 coppie, con zero differenze: nessuna coppia mancante o in più, nessuna differenza di mezzo, di distanza o di indicazione Dentro il comune. La cartella di lavoro coincide inoltre cella per cella con le tabelle da cui è costruita.
+\item \textbf{Ordine dei comuni.} Per 65 cammini lineari di camminiditalia.org l'arrivo pubblicato si riconosce come un comune: in 48 (il 74\%) è l'ultimo comune dell'elenco, negli altri 17 no, e per questi cammini l'ordine non si può confermare con l'arrivo; in nessun cammino partenza e arrivo risultano scambiati. È un controllo indipendente, perché l'ordine usa la partenza ma non l'arrivo.
+\item \textbf{Controlli automatici nella costruzione.} La cartella di lavoro non viene scritta se una condizione è violata: ogni cammino compare una volta sola e ogni coppia rimanda a un cammino dell'elenco; nessuna coppia è ripetuta; per ogni cammino l'ordine dei comuni va da 1 al numero dei suoi comuni senza salti; per ogni comune le righe di dettaglio sommano al totale. I passi precedenti si fermano con un messaggio se i dati di partenza non sono coerenti, ad esempio se una scheda di catalogo non appartiene a esattamente un cammino distinto o se un tracciato non ha l'etichetta del mezzo.
+\item \textbf{Test.} Il codice ha 663 test automatici, tutti superati, che non usano la rete e controllano le regole su esempi costruiti e su casi incontrati nei dati reali.
+\item \textbf{Revisioni.} Ogni passo è stato rivisto prima di passare al successivo, sul codice e sui risultati: le soglie sono state provate sui dati reali (\cref{sec:attraversa,sec:dedup}) e i casi limite letti uno per uno, ad esempio le coppie lontane dell'esperimento sugli estremi di tappa e le coppie con nome simile e tracciato diverso.
+\end{itemize}
+
+Il codice è stato scritto e rivisto con strumenti assistiti dall'intelligenza artificiale, sotto la supervisione dell'autore.
+
+\FloatBarrier
+
+\section{Risultati}\label{sec:risultati}
+
+Questa sezione riporta che cosa contiene la cartella di lavoro: quanti cammini e comuni, con quali caratteristiche e come si distribuiscono sul territorio. La \cref{tab:numeri} dà i conteggi principali, la \cref{tab:topcomuni} i comuni con più cammini e la \cref{tab:regioni} il dettaglio per regione.
+
+\begin{table}[!htbp]
+\begin{tabella}
+\caption{I conteggi principali}\label{tab:numeri}
+\begin{tabularx}{\linewidth}{|L|R{2.4cm}|}
+\hline
+\rowcolor{navy}\hd{Voce} & \hd{Valore}\\ \hline
+Schede delle due fonti di catalogo (camminiditalia.org 136, Ministero 127) & 263\\ \hline
+\textbf{Cammini distinti} & \textbf{212}\\ \hline
+\quad presenti solo in camminiditalia.org / solo nel Catalogo del Ministero / in entrambi & 85 / 82 / 45\\ \hline
+\quad con tracciato del catalogo / di OpenStreetMap / di entrambi / senza tracciato & 181 / 6 / 4 / 21\\ \hline
+\quad religiosi / non religiosi & 142 / 70\\ \hline
+\quad a piedi / a piedi e in bici & 199 / 13\\ \hline
+\textbf{Comuni attraversati} (sui 7.896 comuni italiani) & \textbf{3.411 (43,2\%)}\\ \hline
+\quad attraversati da almeno un cammino religioso & 2.882\\ \hline
+\quad attraversati da un solo cammino & 2.270\\ \hline
+\textbf{Coppie cammino e comune} & \textbf{5.095}\\ \hline
+\quad con il tracciato dentro il comune / solo entro 100 metri & 4.830 / 265\\ \hline
+Comuni per cammino, sui 191 cammini con almeno un comune: mediana / massimo (Via Francigena) & 15 / 363\\ \hline
+\end{tabularx}
+\end{tabella}
+\end{table}
+
+
+\begin{table}[!htbp]
+\begin{tabella}
+\caption{I comuni attraversati dal maggior numero di cammini}\label{tab:topcomuni}
+\begin{tabularx}{\linewidth}{|L|P{4.2cm}|R{2.2cm}|}
+\hline
+\rowcolor{navy}\hd{Comune} & \hd{Provincia} & \hd{Cammini}\\ \hline
+Roma & Roma & 10\\ \hline
+L'Aquila & L'Aquila & 9\\ \hline
+Assisi & Perugia & 7\\ \hline
+Bologna & Bologna & 7\\ \hline
+Chiusi della Verna & Arezzo & 7\\ \hline
+Rieti & Rieti & 7\\ \hline
+Capannori & Lucca & 6\\ \hline
+Castiglione di Garfagnana & Lucca & 6\\ \hline
+Firenze & Firenze & 6\\ \hline
+Lucca & Lucca & 6\\ \hline
+\end{tabularx}
+\end{tabella}
+\par\vspace{2pt}\footnotesize I comuni con 6 cammini sono 9; la tabella riporta i primi quattro in ordine alfabetico.\par\normalsize
+\end{table}
+
+\FloatBarrier
+\begin{tabella}
+\begin{xltabular}{\linewidth}{|L|R{2.6cm}|R{3.2cm}|R{2.2cm}|}
+\rowcolor{white}\caption{Comuni attraversati e cammini per regione}\label{tab:regioni}\\
+\hline
+\rowcolor{navy}\hd{Regione} & \hd{Comuni attraversati} & \hd{\% dei comuni della regione} & \hd{Cammini}\\ \hline
+\endfirsthead
+\hline
+\rowcolor{navy}\hd{Regione} & \hd{Comuni attraversati} & \hd{\% dei comuni della regione} & \hd{Cammini}\\ \hline
+\endhead
+Piemonte & 372 & 31,53 & 23\\ \hline
+Valle d'Aosta & 53 & 71,62 & 4\\ \hline
+Lombardia & 628 & 41,81 & 28\\ \hline
+Trentino-Alto Adige & 98 & 34,75 & 11\\ \hline
+Veneto & 143 & 25,54 & 5\\ \hline
+Friuli-Venezia Giulia & 84 & 39,07 & 8\\ \hline
+Liguria & 75 & 32,05 & 9\\ \hline
+Emilia-Romagna & 189 & 57,27 & 34\\ \hline
+Toscana & 201 & 73,63 & 33\\ \hline
+Umbria & 61 & 66,30 & 21\\ \hline
+Marche & 108 & 48,00 & 12\\ \hline
+Lazio & 250 & 66,14 & 31\\ \hline
+Abruzzo & 177 & 58,03 & 15\\ \hline
+Molise & 77 & 56,62 & 7\\ \hline
+Campania & 155 & 28,18 & 9\\ \hline
+Puglia & 145 & 56,42 & 11\\ \hline
+Basilicata & 42 & 32,06 & 8\\ \hline
+Calabria & 196 & 48,51 & 8\\ \hline
+Sicilia & 170 & 43,48 & 13\\ \hline
+Sardegna & 187 & 49,60 & 5\\ \hline
+\rowcolor{white}\textbf{Italia} & \textbf{3.411} & \textbf{43,20} & \textbf{191}\\ \hline
+\end{xltabular}
+\end{tabella}
+\par\vspace{2pt}\footnotesize Un cammino che attraversa più regioni si conta in ciascuna, quindi la colonna Cammini non somma al totale; il totale conta i 191 cammini con almeno un comune.\par\normalsize
+
+Più di due comuni italiani su cinque, 3.411 su 7.896, sono attraversati da almeno un cammino, ma per la maggior parte di loro (2.270) il cammino è uno solo; i comuni con più cammini sono Roma (10) e L'Aquila (9), poi Assisi, Bologna, Chiusi della Verna e Rieti (7). In proporzione la Toscana è la regione più attraversata (73,63\% dei comuni), seguita da Valle d'Aosta, Umbria e Lazio; la Lombardia ha il numero più alto di comuni attraversati (628), il Veneto la quota più bassa (25,54\%). Due cammini su tre (142 su 212) hanno carattere religioso, e 2.882 comuni sono toccati da almeno uno di essi.
+
+\FloatBarrier
+
+\section{Limiti e come leggere i risultati}\label{sec:limiti}
+
+Questa sezione dice quanto ci si può fidare di ogni numero e come leggere i casi in cui il dato è incompleto.
+
+\begin{itemize}
+\item \textbf{Cammini senza alcun tracciato.} 21 cammini, 20 dei quali presenti solo nel Catalogo del Ministero, non hanno tracce nei cataloghi né un abbinamento con OpenStreetMap: compaiono nel foglio Cammini con Fonte del tracciato Nessuna, zero comuni e una nota, come la Via dei conventi di Padre Pio. Non mancano dall'elenco dei cammini, mancano dai conteggi per comune.
+\item \textbf{Tracciati incompleti.} La copertura mediana è del 98\%, ma 5 cammini hanno meno della metà della lunghezza dichiarata coperta da un tracciato e altri 16 tra la metà e l'80\%; per questi l'elenco dei comuni è parziale, come per il Cammino di Santu Jacu. La colonna Copertura del tracciato (\cref{sec:lunghezze}) dice per ogni cammino quanto fidarsi della completezza del suo elenco di comuni.
+\item \textbf{Ordine sui cammini con più rami.} Tra due comuni consecutivi dell'elenco la distanza mediana tra i centri è di 6,2 chilometri, ma in 22 cammini almeno un passaggio supera i 30 chilometri, in genere dove l'elenco passa da un ramo al successivo e riparte da un incrocio o da un capo. Il passaggio più lungo, 377 chilometri in linea d'aria, è nel Cammino di San Michele, da Manfredonia a Semproniano. In questi cammini due comuni consecutivi nell'elenco possono quindi essere lontani sul terreno.
+\item \textbf{Verso dei tracciati di OpenStreetMap.} Dei 6 cammini con il solo tracciato di OpenStreetMap, 5 non hanno una partenza pubblicata riconoscibile. Per questi cammini l'elenco dei comuni può andare dall'arrivo alla partenza.
+\item \textbf{Possibili duplicati.} 11 cammini portano la nota “possibile duplicato”, perché in ogni coppia uno dei due non ha tracciato e il confronto non si può fare (ad esempio il Grande Cammino dei Briganti e il Cammino dei Briganti). Una scheda senza tracciato non aggiunge comuni, quindi la nota non altera i conteggi per comune; può invece far contare due volte lo stesso cammino nel foglio Cammini: al più 7 cammini in più nel conteggio dei 212, uno per ciascuna delle 7 coppie.
+\item \textbf{Cammini fusi con tracciati solo in parte coincidenti.} 19 coppie di schede con lo stesso nome sono fuse con una sovrapposizione tra il 70\% e il 95\%: in una fonte c'è una variante in più (7 coppie), una versione diversa del percorso su alcuni chilometri (10) o mancano alcune tappe (2), come per la Via Fabaria. Con una regola più severa resterebbero separate e il foglio Cammini avrebbe più righe; il numero di comuni attraversati non cambia, aumentano le coppie cammino e comune (\cref{sec:dedup}).
+\item \textbf{Carattere religioso dal solo nome.} 3 cammini risultano religiosi soltanto perché il nome contiene una parola religiosa; la colonna Indicazione del carattere religioso li riconosce e permette di escluderli.
+\item \textbf{Comuni sfiorati.} Con la regola dei 100 metri, 265 coppie su 5.095 (il 5,2\%) riguardano comuni che il tracciato non attraversa ma sfiora. Per un conteggio stretto si filtra la colonna Dentro il comune del foglio Coppie su Sì.
+\item \textbf{Lunghezze dichiarate discordi.} In 59 cammini il tracciato è più lungo della lunghezza dichiarata, in 18 di oltre il 10\% (tra questi il Cammino di San Michele) e in 3 di oltre la metà. La copertura è limitata a 1 proprio perché in questi casi il disaccordo è tra le fonti e non dice nulla sulla completezza.
+\end{itemize}
+
+\FloatBarrier
+
+\section{Materiali consegnati}\label{sec:materiali}
+
+Il lavoro si consegna in tre parti, che insieme permettono di leggere i risultati e di rifarli.
+
+\begin{itemize}
+\item \textbf{La cartella di lavoro} \texttt{cammini\_comuni\_2026-11-04.xlsx}, con i quattro fogli descritti nella \cref{sec:partenza}. Il foglio Note riporta anche parametri, date di scarico e licenze delle fonti; questo rapporto non lo ripete.
+\item \textbf{Il pacchetto di codice} \texttt{cammitaly}, che riproduce l'intero processo; installazione, comandi e tempi sono descritti nel suo README.
+\item \textbf{Questo rapporto}.
+\end{itemize}
+
+Nomisma può condividere con i propri partner i dati di Cammini d'Italia contenuti nella cartella di lavoro; i partner non possono ridistribuirli (\cref{tab:fonti}).
+
+A ogni rinnovo annuale (\cref{sec:partenza}) la nuova cartella di lavoro datata si scrive accanto a quelle degli anni precedenti.
+
+\FloatBarrier
+
+\appendix
+
+\section{Parametri}\label{sec:parametri}
+
+Questa appendice raccoglie in un solo posto ogni soglia del processo, nell'ordine dei passi, con il valore in vigore e il motivo; il testo del metodo ne spiega l'uso. Le soglie stanno in un unico file di configurazione del pacchetto di codice e si cambiano lì.
+
+\vspace{0.6em}
+\begin{tabella}
+\begin{xltabular}{\linewidth}{|P{4.3cm}|P{3.0cm}|L|}
+\rowcolor{white}\caption{Le soglie del processo}\label{tab:parametri}\\
+\hline
+\rowcolor{navy}\hd{Parametro} & \hd{Valore} & \hd{Motivo}\\ \hline
+\endfirsthead
+\hline
+\rowcolor{navy}\hd{Parametro} & \hd{Valore} & \hd{Motivo}\\ \hline
+\endhead
+\multicolumn{3}{|l|}{\cellcolor{white}\textbf{Tracciati (\cref{sec:tracciati})}}\\* \hline\noalign{\nobreak}
+Salto che spezza una traccia & 10 km tra due punti consecutivi & Un salto così lungo è un errore di registrazione, non un tratto percorso\\ \hline
+Traccia su uno strato condiviso della mappa & somiglianza del nome almeno 85; pari merito entro 4 punti & Sui dati il candidato migliore vale almeno 94,3 e il secondo dista almeno 4,7 punti: ogni soglia di accettazione fino a 94 e ogni margine fino a 4,7 danno gli stessi abbinamenti\\ \hline
+Traccia senza strato & somiglianza almeno 95 & Si cerca tra tutti i cammini, quindi serve un nome quasi identico\\ \hline
+Copie della stessa tappa (Ministero) & 25 m di scarto massimo e lunghezze entro il 5\% & Lo stesso percorso in due formati differisce solo per l'arrotondamento dei punti\\ \hline
+Percorso intero accanto alle tappe & lungo almeno il doppio della tappa mediana; contiene entro 25 m almeno 3 tappe, ciascuna al massimo il 75\% e tutte insieme almeno il 60\% della sua lunghezza & Va escluso dal conteggio delle tappe senza perdere il suo tracciato\\ \hline
+Tappa troppo lunga & oltre 100 km & È un percorso intero con un nome da tappa: diventa di tipo altro\\ \hline
+Tracciati fuori dall'Italia & fuori dal riquadro dell'Italia con le isole & Un tracciato interamente fuori da questo riquadro è un errore del file\\ \hline
+Archivio condiviso da due schede (Ministero) & somiglianza almeno 80 e 10 punti di vantaggio & L'archivio va alla scheda il cui nome è più vicino a quello del file; sotto queste soglie l'attribuzione è incerta\\ \hline
+Controllo della lunghezza di una tappa & da 0,5 a 2 volte la distanza dichiarata & Fuori da questo intervallo la traccia è sospetta (troncata o percorso intero); si segnala, non si corregge\\ \hline
+\multicolumn{3}{|l|}{\cellcolor{white}\textbf{Attraversamento (\cref{sec:attraversa})}}\\* \hline\noalign{\nobreak}
+Distanza dal confine comunale & 100 m & Decisa da Nomisma sulle prove: il richiamo smette di crescere in tutte le prove; oltre si aggiungono solo comuni confinanti\\ \hline
+Confini comunali & ISTAT al 1 gennaio dell'anno di elaborazione, non generalizzati & Confini ufficiali in vigore, senza semplificazione del disegno\\ \hline
+\multicolumn{3}{|l|}{\cellcolor{white}\textbf{Stesso cammino in più fonti (\cref{sec:dedup})}}\\* \hline\noalign{\nobreak}
+Nomi simili & punteggio almeno 95 su 100 & Nessuna coppia tra 87,5 e 100 (estremi esclusi); il punteggio più alto sotto 100, 87,5, è di due cammini diversi\\ \hline
+Vicinanza di due tracciati & 50 m, con un punto ogni 10 m & Con questo passo l'errore sulla quota misurata resta sotto l'1\%\\ \hline
+Stesso cammino & almeno il 70\% del più corto sull'altro & Deciso da Nomisma sulle prove; fonde le versioni con una variante o un tratto diverso in una sola fonte\\ \hline
+Cammini distinti & meno del 50\% & Deciso da Nomisma sulle prove; sotto, le coppie osservate sono percorsi diversi con un nome in comune\\ \hline
+Sezione di un cammino & almeno il 95\% e una parola del nome in comune & Il cammino è contenuto per intero nell'altro\\ \hline
+\multicolumn{3}{|l|}{\cellcolor{white}\textbf{OpenStreetMap (\cref{sec:osm})}}\\* \hline\noalign{\nobreak}
+Quota del tracciato & almeno il 70\% & La stessa regola dello stesso cammino tra fonti\\ \hline
+Rapporto di lunghezza & da 0,5 a 1,5 & Più lunga è un itinerario che contiene il cammino, più corta ne copre un tratto\\ \hline
+Cammini senza tracce: regioni & almeno l'80\% della relazione nelle regioni dichiarate & Senza tracciato la posizione si controlla con le regioni\\ \hline
+Cammini senza tracce: lunghezza minima & 5 km se manca la dichiarata & È la lunghezza del cammino più corto del catalogo\\ \hline
+Cammini senza tracce: nome contenuto & almeno 2 parole & Una parola sola dà punteggio pieno con ogni nome che la usa\\ \hline
+Tappe dello stesso percorso & relazioni a meno di 500 m & Relazioni così vicine sono tappe di uno stesso cammino\\ \hline
+Relazioni annidate & contenute per almeno il 95\% & Resta la più esterna, che descrive il cammino intero\\ \hline
+\multicolumn{3}{|l|}{\cellcolor{white}\textbf{Ordine dei comuni (\cref{sec:ordine})}}\\* \hline\noalign{\nobreak}
+Aggancio tra tappe & 500 m dalla fine della dorsale & Assorbe il rumore del GPS agli estremi di tappa\\ \hline
+Partenza di una sezione & entro 2 km da un capo del percorso & Solo allora la partenza della sezione è quella del cammino\\ \hline
+Passo lungo la dorsale & 10 m & Due comuni si scambiano solo se raggiunti a meno di 15 m l'uno dall'altro\\ \hline
+\multicolumn{3}{|l|}{\cellcolor{white}\textbf{Carattere religioso (\cref{sec:etichette})}}\\* \hline\noalign{\nobreak}
+Parole religiose nel nome (solo schede di camminiditalia.org) & 21 parole, con le loro varianti & san, santa, santo, sant, santi, santuario, madonna, mater, francescano, frati, cappuccini, benedettino, pellegrino, romea, francigena, abbazia, eremo, eremi, devozionale, monastero, sacro. Scelte sui nomi reali; scartate pieve (è spesso un toponimo) e spirituale (non compare in nessun nome)\\ \hline
+\end{xltabular}
+\end{tabella}
+
+\end{document}

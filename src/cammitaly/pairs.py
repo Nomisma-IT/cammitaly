@@ -1,4 +1,4 @@
-"""Coppie cammino-comune per i cammini distinti di dedup (decisioni D-7, D-8, D-9, D-11, D-12).
+"""Coppie cammino-comune per i cammini distinti di dedup (distanza di 100 m, tracciati in bici inclusi, ordine lungo il percorso, etichette e deduplicazione).
 
 Passi: le tracce di tutti i membri (anche bici) e, per i cammini senza tracce, la geometria OSM abbinata (la stessa regola
 di dedup) si incrociano con i comuni a CROSSING_DISTANCE_M dal confine, una linea per traccia; ogni traccia passa al
@@ -136,8 +136,8 @@ def load_inputs() -> Inputs:
     )
 
 
-def _resolve_start(texts: Iterable[str], cammino_id: str, index: calibration.PlaceIndex, regions: Mapping[str, object]) -> str | None:
-    """PRO_COM_T del primo testo che indica un solo comune (regole di calibrazione; un nome uguale a quello di un solo comune vale anche se un altro comune comincia con lo stesso nome)."""
+def first_place(texts: Iterable[str], cammino_id: str, index: calibration.PlaceIndex, regions: Mapping[str, object]) -> str | None:
+    """PRO_COM_T del primo testo che indica un solo comune, per partenza o arrivo (regole di calibrazione; un nome uguale a quello di un solo comune vale anche se un altro comune comincia con lo stesso nome)."""
     for text in texts:
         outcome, code = calibration.match_place(text, index, regions.get(cammino_id), allow_prefix=True)  # type: ignore[arg-type]
         if outcome == config.MATCH_OK:
@@ -153,7 +153,7 @@ def member_starts(comuni: pd.DataFrame) -> dict[str, str]:
     published = {config.CDI_ID_PREFIX + row.id: [row.partenza, first_stage.get(row.id, "")] for row in cammini.itertuples()}
     index = calibration.build_place_index(comuni)
     regions = calibration.regions_by_cammino(cammini, crossing.load_region_codes())
-    resolved = {cid: _resolve_start(texts, cid, index, regions) for cid, texts in published.items()}
+    resolved = {cid: first_place(texts, cid, index, regions) for cid, texts in published.items()}
     return {cid: code for cid, code in resolved.items() if code}
 
 

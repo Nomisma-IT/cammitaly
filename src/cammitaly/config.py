@@ -448,7 +448,7 @@ PAIRS_COPERTURA_DECIMALS = 2
 PAIRS_LUNGHEZZA_DECIMALS = 1  # lunghezza_tracciata_km
 # Ordinamento naturale degli id delle tracce: i gruppi di cifre si confrontano come numeri ("tappa 2" prima di "tappa 10")
 NATURAL_SORT_PATTERN = r"(\d+)"
-# Ordine dei comuni lungo il percorso (D-9). Dorsale: le tracce di questi tipi del principale, nell'ordine delle tappe;
+# Ordine dei comuni lungo il percorso. Dorsale: le tracce di questi tipi del principale, nell'ordine delle tappe;
 # se il principale non ne ha, quelle del membro che ne ha di piu' lunghe; se nessun membro ha tracce del primo tipo si
 # passa al successivo (le tracce altro sono i percorsi interi o senza numero di tappa; poi qualunque tipo, cioe' varianti
 # e bici, perche' un cammino con tracce abbia sempre una dorsale e una lunghezza); in ultimo la geometria OSM sostitutiva.
@@ -508,7 +508,7 @@ DEDUP_DIR = INTERIM_DIR / "dedup"
 DEDUP_FONTI = (CDI_FONTE, MITUR_FONTE)
 # La geometria di un cammino per la deduplica include tutte le tratte, anche bici e altro (decisione del committente)
 DEDUP_TIPI = (TIPO_TAPPA, TIPO_VARIANTE, TIPO_BICI, TIPO_ALTRO)
-# Regola del committente (D-12). Nomi simili (punteggio >= DEDUP_NAME_MIN_SCORE): almeno DEDUP_OVERLAP_MIN del piu'
+# Regola del committente. Nomi simili (punteggio >= DEDUP_NAME_MIN_SCORE): almeno DEDUP_OVERLAP_MIN del piu'
 # corto entro DEDUP_NEAR_M metri dall'altro = lo stesso cammino (duplicato); meno di DEDUP_DISTINCT_BELOW (con entrambe
 # le geometrie) = cammini distinti; in mezzo = limbo "da verificare". Nome non simile: il piu' corto contenuto per almeno
 # DEDUP_SECTION_OVERLAP_MIN in un altro con almeno una parola in comune nella chiave del nome = sezione dell'intero
@@ -574,7 +574,7 @@ DEDUP_SENSIBILITA_FIELDS = (
 )
 # Coppie quasi duplicate (solo diagnosi dei tratti lontani): nome come per i duplicati, quota minore da questo valore a DEDUP_QUASI_OVERLAP_MAX
 DEDUP_QUASI_OVERLAP_MIN = 0.5
-DEDUP_QUASI_OVERLAP_MAX = 0.95  # la vecchia soglia D-2: oltre, il corto sta nell'altro per intero
+DEDUP_QUASI_OVERLAP_MAX = 0.95  # la soglia della prima prova (95%): oltre, il corto sta nell'altro per intero
 DEDUP_QUASI_FIELDS = (
     "cammino_a", "cammino_b", "nome_a", "nome_b", "punteggio_nome", "quota_minore", "cammino_corto",
     "lunghezza_a_m", "lunghezza_b_m", "n_segmenti_lontani", "km_lontani", "km_segmento_max", "distanza_max_m",
@@ -846,7 +846,8 @@ WORKBOOK_NOTE_SECTIONS = (
         "Data di elaborazione: {data}.",
     )),
     ("Fonti", (
-        "camminiditalia.org: elenco e tracciati dei cammini del portale Cammini d'Italia. Scaricato {data_cdi}.",
+        "camminiditalia.org: elenco e tracciati dei cammini del portale Cammini d'Italia. Scaricato {data_cdi}. "
+        "Dati di Cammini d'Italia S.R.L., usati in base al contratto «Commercial Data License Agreement and API access term» stipulato con Nomisma: Nomisma può condividerli con i propri partner, che non possono ridistribuirli.",
         "Catalogo dei cammini religiosi del Ministero del Turismo: elenco e tracciati dei cammini religiosi. Scaricato {data_mitur}.",
         "OpenStreetMap, estratto di Geofabrik: relazioni di percorso. Scaricato {data_osm}. © OpenStreetMap contributors, ODbL "
         "(https://www.openstreetmap.org/copyright).",
@@ -854,3 +855,118 @@ WORKBOOK_NOTE_SECTIONS = (
         "Licenza CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/), fonte: ISTAT.",
     )),
 )
+
+# --- Numeri del rapporto (report_numbers.py) ---
+# Ogni numero citato dal rapporto metodologico e' una riga di REPORT_NUMBERS_FILE, calcolata dai dati gia' prodotti dalla
+# catena (mai rilanciando un passo). Valori ASCII negli id; descrizioni in italiano; quote e recall sempre in percentuale
+REPORT_NUMBERS_FILE = WORKBOOK_OUTPUT_DIR / "numeri_rapporto.csv"
+REPORT_NUMBERS_FIELDS = ("id", "sezione", "descrizione", "valore", "unita", "fonte")
+REPORT_SEZIONI = (
+    "fonti", "tracciati", "calibrazione", "deduplicazione", "osm", "etichette", "comuni", "ordine", "cartella",
+)
+REPORT_ID_PATTERN = r"[a-z][a-z0-9_]*"
+REPORT_EMPTY_SLUG = "vuoto"  # valore mancante usato come parte di un id
+REPORT_PERCENT_DECIMALS = 2
+REPORT_VALUE_DECIMALS = 4  # numeri non percentuali (m, km, punteggi)
+REPORT_BYTES_PER_MB = 1024**2
+REPORT_SOURCE_NOTE_SEPARATOR = "; "  # tra il file e il filtro nella colonna fonte
+REPORT_DATA_PREFIX = "data/"  # i percorsi nella colonna fonte partono da qui
+# Percentili di una distribuzione: nome nell'id -> quantile
+REPORT_QUANTILES = {"mediana": 0.5, "p90": 0.9}
+# Fonti: registro delle richieste e scheda MiTur
+REPORT_LOG_DATE_CHARS = 10  # AAAA-MM-GG, i primi caratteri di utc_iso
+REPORT_MITUR_FORMAT_SEPARATOR = ":"  # "gpx:33|kml:2" in mitur_cammini.csv: formato e numero di file
+REPORT_CDI_TIPOLOGIE = ("lineare", "anello")
+# Calibrazione: colonne di sintesi.csv riportate per ogni d (colonna, parte dell'id, descrizione con {d}, unita', fattore).
+# Le quote (fattore 100) escono in percentuale
+REPORT_CALIBRATION_COLUMNS = (
+    ("A_recall_cammino", "a_recall_cammino", "Calibrazione A: estremi di tappa pubblicati ritrovati entro {d} m dalla linea del cammino", "%", 100),
+    ("A_recall_tratta", "a_recall_tratta", "Calibrazione A: estremi di tappa pubblicati ritrovati entro {d} m dalla linea della tratta", "%", 100),
+    ("C_recall", "c_recall", "Calibrazione C: comuni dell'altra fonte ritrovati a d = {d} m (coppie cdi-MiTur con lunghezze simili)", "%", 100),
+    ("C_extra_tot", "c_extra", "Calibrazione C: comuni in piu' rispetto all'altra fonte a d = {d} m (coppie con lunghezze simili)", "comuni", 1),
+    ("C_tutte_recall", "c_tutte_recall", "Calibrazione C: comuni dell'altra fonte ritrovati a d = {d} m (tutte le coppie cdi-MiTur)", "%", 100),
+    ("C_tutte_extra_tot", "c_tutte_extra", "Calibrazione C: comuni in piu' rispetto all'altra fonte a d = {d} m (tutte le coppie cdi-MiTur)", "comuni", 1),
+    ("D_coppie_totali", "d_coppie", "Coppie cammino-comune dei cammini del catalogo con tracce a d = {d} m", "coppie", 1),
+    ("D_coppie_cdi", "d_coppie_cdi", "Coppie cammino-comune dei cammini cdi a d = {d} m", "coppie", 1),
+    ("D_coppie_mitur", "d_coppie_mitur", "Coppie cammino-comune dei cammini MiTur a d = {d} m", "coppie", 1),
+    ("D_comuni_per_cammino_cdi", "d_comuni_per_cammino_cdi", "Comuni per cammino cdi (media) a d = {d} m", "comuni", 1),
+    ("D_comuni_per_cammino_mitur", "d_comuni_per_cammino_mitur", "Comuni per cammino MiTur (media) a d = {d} m", "comuni", 1),
+    ("D_aumento_vs_0", "d_aumento", "Coppie cammino-comune in piu' a d = {d} m rispetto a d = 0", "coppie", 1),
+    ("D_aumento_vs_0_pct", "d_aumento_pct", "Coppie cammino-comune in piu' a d = {d} m rispetto a d = 0, in percentuale", "%", 1),
+)
+# Esperimento B: colonne per metodo di degradazione (sintesi.csv: B_<metodo>_<misura>). Il caso peggiore su tutti i
+# metodi esce per ogni d; il dettaglio per metodo solo a d scelta
+REPORT_CALIBRATION_B_MEASURES = (
+    ("recall", "recall", "min", "Recall sui comuni di riferimento", "%", 100),
+    ("recall_marginale", "recall_marginale", "min", "Recall sui comuni a rischio (traccia dentro per meno di 200 m)", "%", 100),
+    ("extra_tot", "extra", "max", "Comuni in piu' rispetto al riferimento", "comuni", 1),
+)
+REPORT_CALIBRATION_B_METHOD_TEXT = {
+    DEGRADE_SUBSAMPLE_PREFIX: "un vertice ogni {n} m",
+    DEGRADE_SIMPLIFY_PREFIX: "semplificazione con tolleranza {n} m",
+    DEGRADE_JITTER_PREFIX: "errore laterale casuale con sigma {n} m",
+    DEGRADE_SHIFT_PREFIX: "traslazione laterale di {n} m (lato peggiore)",
+}
+# Deduplicazione: id breve della diagnosi dei quasi duplicati
+REPORT_DEDUP_DIAGNOSI_IDS = {
+    DIAGNOSI_SFASAMENTO: "sfasamento", DIAGNOSI_VARIANTE: "variante", DIAGNOSI_MANCANTI: "mancanti", DIAGNOSI_VERSIONE: "versione",
+}
+REPORT_DEDUP_CLASSES = (CLASSE_DUPLICATO, CLASSE_SEZIONE, CLASSE_LIMBO, CLASSE_DISTINTO)
+# Abbinamento con OSM: esiti in ordine di lettura
+REPORT_OSM_ESITI = (
+    ESITO_ABBINATO, ESITO_AMBIGUO, ESITO_SOLO_GEOMETRIA, ESITO_NESSUNO, ESITO_PARZIALE, ESITO_CONTENITORE,
+)
+REPORT_OSM_PILGRIMAGE_VALUES = ("si", "no", OSM_MATCH_PILGRIMAGE_SILENT)
+REPORT_OSM_TAG_YES = "yes"  # pilgrimage=yes in cammini_osm.csv; no = valori negativi di tags.py
+# Etichette: da che cosa risulta il carattere religioso (id, descrizione); la classificazione e' in report_numbers.py
+REPORT_EVIDENCE_KINDS = (
+    ("catalogo", "nel Catalogo dei cammini religiosi del Ministero del Turismo"),
+    ("tema_cdi", "con tema spirituale su camminiditalia.org"),
+    ("tema_mappa", "con tema spirituale sulla mappa Cammini d'Italia"),
+    ("pellegrinaggio_osm", "indicati come pellegrinaggio in OpenStreetMap"),
+    ("nome", "con una parola religiosa nel nome"),
+)
+REPORT_TAG_MULTI_FIELDS = ("tipologia", "portata")  # campi multivalore elencati per valore
+REPORT_TAG_FLAG_FIELDS = ("credenziale", "segnaletica")  # campi si/no: cammini con almeno un si
+# Comuni
+REPORT_TOP_COMUNI = 10
+REPORT_COPERTURA_BANDS = (0.5, 0.8)  # sotto la prima, tra le due, dalla seconda in su; vuota a parte
+REPORT_NOTA_KINDS = (("possibile_duplicato", "possibile duplicato"), ("nessuna_geometria", "nessuna geometria"))
+# Ordine: salto tra comuni consecutivi (distanza tra i centroidi) oltre cui il passaggio a un altro ramo e' sospetto
+REPORT_JUMP_THRESHOLDS_KM = (30, 60, 100)
+REPORT_ENDPOINT_TIPOLOGIA = "lineare"
+# Cartella di lavoro
+REPORT_WORKBOOK_GLOB = WORKBOOK_FILE_TEMPLATE.format(data="*")
+REPORT_WORKBOOK_DATE_PATTERN = r"(\d{4}-\d{2}-\d{2})\.xlsx$"
+REPORT_WORKBOOK_DATA_SHEETS = (WORKBOOK_SHEET_COMUNI, WORKBOOK_SHEET_CAMMINI, WORKBOOK_SHEET_COPPIE)  # una riga di intestazione
+# Calibrazione: colonne di sintesi.csv che non dipendono da d (colonna, id, descrizione, unita', fattore)
+REPORT_CALIBRATION_FIXED = (
+    ("A_n_coppie_cammino", "calib_a_coppie_cammino", "Calibrazione A: coppie (cammino, luogo) misurate sulla linea del cammino", "coppie", 1),
+    ("A_n_coppie_tratta", "calib_a_coppie_tratta", "Calibrazione A: coppie (tratta, luogo) misurate sulla linea della tratta", "coppie", 1),
+    ("A_n_senza_linea_coppie", "calib_a_senza_linea_coppie", "Calibrazione A: coppie escluse perche' il cammino non ha una linea", "coppie", 1),
+    ("A_n_senza_linea_cammini", "calib_a_senza_linea_cammini", "Calibrazione A: cammini senza una linea", "cammini", 1),
+    ("B_n_tratte", "calib_b_tratte", "Calibrazione B: tratte a tappa dense usate come riferimento", "tratte", 1),
+    ("B_n_cammini", "calib_b_cammini", "Calibrazione B: cammini con tracce dense", "cammini", 1),
+    ("B_n_riferimento", "calib_b_riferimento", "Calibrazione B: coppie (cammino, comune) di riferimento, dove la traccia densa entra nel comune", "coppie", 1),
+    ("B_n_marginali", "calib_b_marginali", "Calibrazione B: coppie a rischio, dove la traccia densa sta dentro il comune per meno di 200 m", "coppie", 1),
+    ("C_n_gruppi", "calib_c_gruppi_lunghezza_simile", "Calibrazione C: coppie cdi-MiTur dello stesso cammino con lunghezze simili", "coppie", 1),
+    ("C_densa_n_gruppi", "calib_c_gruppi_densi", "Calibrazione C: coppie cdi-MiTur con lunghezze simili e traccia MiTur densa", "coppie", 1),
+    ("C_tutte_n_gruppi", "calib_c_gruppi_tutti", "Calibrazione C: coppie cdi-MiTur dello stesso cammino, di qualunque lunghezza", "coppie", 1),
+    ("D_n_cammini", "calib_d_cammini", "Calibrazione D: cammini del catalogo con tracce misurati", "cammini", 1),
+)
+# Calibrazione A, distribuzione della distanza dei luoghi pubblicati dalla linea (A_distribuzione.csv, una riga per ambito)
+REPORT_CALIBRATION_DISTRIBUTION = (
+    ("n_misurate", "n_misurate", "coppie (luogo, {ambito}) misurate", "coppie", 1),
+    ("quota_a_0", "quota_a_0", "quota di luoghi pubblicati a distanza 0 dalla linea del {ambito}", "%", 100),
+    ("p50", "p50_m", "distanza mediana dei luoghi pubblicati dalla linea del {ambito}", "m", 1),
+    ("p90", "p90_m", "90o percentile della distanza dei luoghi pubblicati dalla linea del {ambito}", "m", 1),
+    ("p95", "p95_m", "95o percentile della distanza dei luoghi pubblicati dalla linea del {ambito}", "m", 1),
+    ("p99", "p99_m", "99o percentile della distanza dei luoghi pubblicati dalla linea del {ambito}", "m", 1),
+    ("max", "max_m", "distanza massima di un luogo pubblicato dalla linea del {ambito}", "m", 1),
+)
+# Calibrazione A, esiti del confronto dei nomi dei luoghi con i comuni ISTAT (riga origine "tutte", ruolo "tutti")
+REPORT_CALIBRATION_MATCH_ROW = ("tutte", "tutti")
+REPORT_CALIBRATION_MATCH_COLUMNS = ("ok", "omonimo", "due luoghi", "nome_parziale", "non_trovato", "vuoto", "n_nomi")
+# Lunghezza del tracciato su lunghezza dichiarata (cammini.csv, prima del tetto a 1 della copertura): soglie contate
+REPORT_LENGTH_RATIO_THRESHOLDS = (1.0, 1.1, 1.5)
+REPORT_OSM_NETWORKS = ("lwn", "rwn", "nwn", "iwn")  # reti di percorsi a piedi di OSM: locale, regionale, nazionale, internazionale

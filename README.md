@@ -111,8 +111,8 @@ Dopo aver cambiato un parametro si rilanciano il passo che lo usa e quelli succe
 
 | Fonte | Contenuto | Licenza e crediti |
 |---|---|---|
-| camminiditalia.org | cammini con scheda tecnica e tappe | licenza non dichiarata |
-| Webmapp (app Cammini d'Italia) | tracce GPS delle tappe | mappa CC BY-NC-SA; tracce senza licenza dichiarata |
+| camminiditalia.org | cammini con scheda tecnica e tappe | dati di Cammini d'Italia S.R.L., usati in base al contratto «Commercial Data License Agreement and API access term» con Nomisma: condivisibili con i partner di Nomisma, non ridistribuibili |
+| Webmapp (app Cammini d'Italia) | tracce GPS delle tappe | mappa CC BY-NC-SA; tracce di Cammini d'Italia S.R.L. con le stesse condizioni di camminiditalia.org |
 | Ministero del Turismo, Catalogo dei Cammini religiosi | schede e zip di tracce GPS | licenza non verificata; fonte: Ministero del Turismo |
 | OpenStreetMap, estratto Geofabrik | relazioni di percorso | ODbL, © OpenStreetMap contributors |
 | ISTAT | confini amministrativi non generalizzati al 1 gennaio | CC BY 4.0, fonte: ISTAT |
