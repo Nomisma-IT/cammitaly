@@ -23,6 +23,8 @@ def strip_comuni(codes: list[str]) -> gpd.GeoDataFrame:
 
 def track(tratta_id: str, cammino_id: str, geometry, tipo: str = "tappa", ordine: int | None = None,
           fonte: str = "cdi", mezzo: str = "piedi") -> dict[str, object]:
+    # l'id di una traccia porta sempre il prefisso della sua fonte (da cui si ricava la fonte della coppia)
+    tratta_id = tratta_id if ":" in tratta_id else f"{fonte}:{tratta_id}"
     return {
         "tratta_id": tratta_id, "cammino_id": cammino_id, "fonte": fonte, "ordine": ordine, "tipo": tipo,
         "lunghezza_m": geometry.length, "geometry": geometry, "mezzo": mezzo,
@@ -405,7 +407,7 @@ def test_copertura_e_lunghezza_tracciata_del_membro_migliore() -> None:
     rows = {m: f for m, f in inputs.tracks.groupby("cammino_id")}
     result = pairs.geometry_columns(["cdi:1", "mitur:2"], inputs.catalogue, rows)
     assert result["copertura"] == 0.80 and result["lunghezza_tracciata_km"] == 80.3
-    assert result["lunghezza_dichiarata_km"] == 100.0 and result["fonte_geometria"] == config.FONTE_GEOMETRIA_CATALOGO
+    assert result["lunghezza_dichiarata_km"] == 100.0 and "fonte_geometria" not in result  # la fonte e' per coppia
 
 
 def test_copertura_non_supera_uno_e_a_pari_quota_vince_il_membro_piu_vicino_al_dichiarato() -> None:
@@ -449,15 +451,14 @@ def test_lunghezza_dichiarata_massima_ignora_i_membri_senza_dato_in_qualunque_or
     assert result["lunghezza_dichiarata_km"] == 40.0
 
 
-def test_fonte_geometria_osm_e_nessuna() -> None:
+def test_traccia_sostitutiva_osm_misura_lunghezza_e_copertura_e_senza_tracce_niente() -> None:
     standin = tracks_of(track("osm:r1", "cdi:1", LineString([(0, 0), (20_000, 0)]), tipo="altro", fonte="osm"))
     inputs = make_inputs(membri_of(u001=["cdi:1"], u002=["cdi:2"]), standin, declared={"cdi:1": 40.0})
     rows = {m: f for m, f in inputs.tracks.groupby("cammino_id")}
     with_standin = pairs.geometry_columns(["cdi:1"], inputs.catalogue, rows)
-    assert with_standin["fonte_geometria"] == config.FONTE_GEOMETRIA_OSM
     assert with_standin["copertura"] == 0.5 and with_standin["lunghezza_tracciata_km"] == 20.0
     nothing = pairs.geometry_columns(["cdi:2"], inputs.catalogue, rows)
-    assert nothing["fonte_geometria"] == config.FONTE_GEOMETRIA_NESSUNA and np.isnan(nothing["lunghezza_tracciata_km"])
+    assert np.isnan(nothing["lunghezza_tracciata_km"])
 
 
 def test_cammino_senza_geometria_resta_con_zero_comuni_e_nota() -> None:
@@ -468,14 +469,31 @@ def test_cammino_senza_geometria_resta_con_zero_comuni_e_nota() -> None:
         regions={"cdi:1": "Lazio", "cdi:2": "valle-daosta"},
     )
     names = {"lazio": "Lazio", "valle-daosta": "Valle d'Aosta/Vallée d'Aoste"}
-    cammini = pairs.build_cammini(inputs, {"u001": 2}, names).set_index(UNICO)
+    cammini = pairs.build_cammini(inputs, {"u001": 2}, names, {"u001": "cdi"}).set_index(UNICO)
     assert list(cammini.index) == ["u001", "u002"] and list(cammini.columns) == list(config.PAIRS_CAMMINI_FIELDS)[1:]
     empty = cammini.loc["u002"]
     assert empty["n_comuni"] == 0 and empty["fonte_geometria"] == config.FONTE_GEOMETRIA_NESSUNA
+    assert cammini.loc["u001", "fonte_geometria"] == "cdi"
     assert empty["nota"] == config.PAIRS_NOTA_NESSUNA_GEOMETRIA
     assert empty["mezzo"] == config.MEZZO_ENTRAMBI  # senza tracce vale l'etichetta del membro
     assert empty["regioni"] == "Valle d'Aosta/Vallée d'Aoste" and cammini.loc["u001", "regioni"] == "Lazio"
     assert cammini.loc["u001", "nota"] == "" and cammini.loc["u001", "n_comuni"] == 2
+
+
+def test_cammino_senza_tracce_non_ha_mezzo_e_i_vuoti_non_contano() -> None:
+    inputs = make_inputs(
+        membri_of(u001=["cdi:1"], u002=["cdi:2"], u003=["cdi:3", "cdi:4"]),
+        tracks_of(
+            track("t1", "cdi:1", LineString([(0, 0), (1000, 0)])),
+            track("t4", "cdi:4", LineString([(0, 0), (1000, 0)]), tipo="bici", mezzo="bici"),
+        ),
+        labels={"cdi:2": {"mezzo": config.MEZZO_NESSUNO}, "cdi:3": {"mezzo": config.MEZZO_NESSUNO}},
+    )
+    names = {"lazio": "Lazio"}
+    cammini = pairs.build_cammini(inputs, {"u001": 2, "u003": 2}, names, {"u001": "cdi", "u003": "cdi"}).set_index(UNICO)
+    assert cammini.loc["u002", "mezzo"] == config.MEZZO_NESSUNO  # i 21 cammini senza tracce: nessun dato, nessun "a piedi"
+    assert cammini.loc["u001", "mezzo"] == config.MEZZO_PIEDI
+    assert cammini.loc["u003", "mezzo"] == config.MEZZO_BICI  # il membro senza tracce e senza mezzo non pesa
 
 
 def test_nota_del_limbo_cita_l_altro_cammino_e_si_somma_alla_geometria_assente() -> None:
@@ -494,7 +512,7 @@ def test_nota_del_limbo_cita_l_altro_cammino_e_si_somma_alla_geometria_assente()
     assert notes["u001"] == ["possibile duplicato di Cammino u002 (u002): manca la geometria per il confronto"]
     assert notes["u003"] == [f"possibile duplicato di Cammino u002 (u002): {config.MOTIVO_NOME_SI_TRACCIATO_INTERMEDIO}"]
     assert "u004" not in notes
-    cammini = pairs.build_cammini(inputs, {}, {"lazio": "Lazio"}).set_index(UNICO)
+    cammini = pairs.build_cammini(inputs, {}, {"lazio": "Lazio"}, {}).set_index(UNICO)
     assert cammini.loc["u002", "nota"] == "; ".join([
         "possibile duplicato di Cammino u001 (u001): manca la geometria per il confronto",
         f"possibile duplicato di Cammino u003 (u003): {config.MOTIVO_NOME_SI_TRACCIATO_INTERMEDIO}",
@@ -567,11 +585,9 @@ def test_coppie_con_le_colonne_del_contratto_ordinate_per_percorso() -> None:
     table = pd.DataFrame({
         UNICO: ["u002", "u001", "u001"], COMUNE: ["001", "003", "002"], "distanza_m": [0.0, 10.0, 0.0],
         "dentro": [True, False, True], "mezzo": ["piedi"] * 3, "ordine": pd.array([1, 2, 1], dtype="Int64"),
+        "fonte_geometria": ["osm", "cdi|mitur", "cdi"],
     })
-    cammini = pd.DataFrame({
-        UNICO: ["u001", "u002"], "nome": ["Uno", "Due"], "religioso": ["si", "no"],
-        "fonte_geometria": ["catalogo", "osm"],
-    })
+    cammini = pd.DataFrame({UNICO: ["u001", "u002"], "nome": ["Uno", "Due"], "religioso": ["si", "no"]})
     comune_table = pd.DataFrame({
         COMUNE: ["001", "002", "003"], "comune": ["Alfa", "Beta", "Gamma"], "sigla": ["NA", "RM", "TO"],
         "cod_uts": [1, 2, 3], "provincia": ["P1", "P2", "P3"], "cod_reg": [1, 2, 3], "regione": ["R1", "R2", "R3"],
@@ -580,6 +596,7 @@ def test_coppie_con_le_colonne_del_contratto_ordinate_per_percorso() -> None:
     assert list(coppie.columns) == list(config.PAIRS_COPPIE_FIELDS)
     assert coppie[[UNICO, COMUNE]].values.tolist() == [["u001", "002"], ["u001", "003"], ["u002", "001"]]
     assert coppie["sigla"].tolist() == ["RM", "TO", "NA"] and coppie["religioso"].tolist() == ["si", "si", "no"]
+    assert coppie["fonte_geometria"].tolist() == ["cdi", "cdi|mitur", "osm"]  # la fonte e' della coppia, non del cammino
 
 
 # --- calibrazione: i numeri pubblicati non cambiano con la bici nell'incrocio ---
@@ -639,19 +656,48 @@ def test_parti_ripetute_dentro_una_sola_traccia_si_contano_una_volta() -> None:
     assert pairs.union_length_m([MultiLineString([main])]) == 10_000
 
 
-# --- fonte della geometria: catalogo e osm ---
+# --- fonte del tracciato: per coppia e per cammino ---
 
-def test_fonte_geometria_catalogo_e_osm_quando_un_membro_ha_tracce_e_un_altro_il_sostituto() -> None:
+def test_fonte_della_traccia_dal_prefisso_dell_id_anche_per_il_sostituto_osm() -> None:
+    assert [pairs.track_source(t) for t in ("cdi:12", "mitur:slug:tappa 2", "osm:r1|osm:r2")] == ["cdi", "mitur", "osm"]
+    with pytest.raises(pairs.PairsError, match="fonte non riconosciuta"):
+        pairs.track_source("gpx:1")
+
+
+def test_fonte_per_coppia_unisce_le_fonti_delle_tracce_vicine_a_quel_comune() -> None:
+    comuni = strip_comuni(["A", "B", "C"])
     tracks = tracks_of(
-        track("t1", "cdi:1", LineString([(0, 0), (1000, 0)])),
-        track("osm:r1", "mitur:2", LineString([(0, 5), (1000, 5)]), tipo="altro", fonte="osm"),
+        track("cdi:9", "cdi:1", LineString([(100, 0), (700, 0)])),  # A: cdi
+        track("mitur:1:t", "mitur:1", LineString([(200, 0), (600, 0)]), tipo="altro", fonte="mitur"),  # A: anche mitur
+        track("cdi:8", "cdi:1", LineString([(1100, 0), (1700, 0)])),  # B: solo cdi
+        track("osm:r1", "mitur:1", LineString([(2100, 0), (2700, 0)]), tipo="altro", fonte="osm"),  # C: solo osm
     )
-    inputs = make_inputs(membri_of(u001=["cdi:1", "mitur:2"]), tracks)
-    rows = {m: f for m, f in inputs.tracks.groupby("cammino_id")}
-    assert pairs.geometry_source(["cdi:1", "mitur:2"], rows) == config.FONTE_GEOMETRIA_CATALOGO_OSM == "catalogo e osm"
-    assert pairs.geometry_source(["cdi:1"], rows) == config.FONTE_GEOMETRIA_CATALOGO
-    assert pairs.geometry_source(["mitur:2"], rows) == config.FONTE_GEOMETRIA_OSM
-    assert pairs.geometry_source(["cdi:9"], rows) == config.FONTE_GEOMETRIA_NESSUNA
+    table = pairs_of(make_inputs(membri_of(u001=["cdi:1", "mitur:1"]), tracks), comuni).loc["u001"]
+    assert table["fonte_geometria"].to_dict() == {"A": "cdi|mitur", "B": "cdi", "C": "osm"}
+    # la fonte di un cammino e' l'unione sulle sue coppie, in ordine alfabetico dei codici
+    assert pairs.pair_sources(table.reset_index().assign(**{UNICO: "u001"})) == {"u001": "cdi|mitur|osm"}
+
+
+def test_fonte_nessuna_per_il_cammino_senza_coppie_e_osm_per_chi_ha_solo_il_sostituto() -> None:
+    comuni = strip_comuni(["A"])
+    tracks = tracks_of(track("osm:r1", "cdi:1", LineString([(100, 0), (700, 0)]), tipo="altro", fonte="osm"))
+    inputs = make_inputs(membri_of(u001=["cdi:1"], u002=["cdi:2"]), tracks)
+    sources = pairs.pair_sources(pairs_of(inputs, comuni).reset_index())
+    assert sources == {"u001": "osm"}  # u002 non compare: senza coppie
+    cammini = pairs.build_cammini(inputs, {"u001": 1}, {"lazio": "Lazio"}, sources).set_index(UNICO)
+    assert cammini.loc["u001", "fonte_geometria"] == "osm" and cammini.loc["u001", "nota"] == ""
+    assert cammini.loc["u002", "fonte_geometria"] == config.FONTE_GEOMETRIA_NESSUNA
+    assert cammini.loc["u002", "nota"] == config.PAIRS_NOTA_NESSUNA_GEOMETRIA
+
+
+def test_la_nota_nessuna_geometria_segue_le_tracce_del_cammino_non_le_coppie() -> None:
+    # u001 ha tracce ma nessun comune entro d: niente nota, la fonte resta nessuna (nessuna coppia)
+    comuni = strip_comuni(["A"])
+    tracks = tracks_of(track("t1", "cdi:1", LineString([(50_000, 0), (51_000, 0)])))
+    inputs = make_inputs(membri_of(u001=["cdi:1"]), tracks)
+    assert pairs_of(inputs, comuni).empty
+    cammini = pairs.build_cammini(inputs, {}, {"lazio": "Lazio"}, {}).set_index(UNICO)
+    assert cammini.loc["u001", "fonte_geometria"] == config.FONTE_GEOMETRIA_NESSUNA and cammini.loc["u001", "nota"] == ""
 
 
 # --- catena geografica delle tappe e partenza pubblicata ---
@@ -754,9 +800,9 @@ def test_cammino_membro_di_due_cammini_distinti_interrompe() -> None:
 def test_sigla_na_di_napoli_arriva_intatta_nel_csv(tmp_path) -> None:
     table = pd.DataFrame({
         UNICO: ["u001"], COMUNE: ["063049"], "distanza_m": [0.0], "dentro": [True], "mezzo": ["piedi"],
-        "ordine": pd.array([1], dtype="Int64"),
+        "ordine": pd.array([1], dtype="Int64"), "fonte_geometria": ["cdi"],
     })
-    cammini = pd.DataFrame({UNICO: ["u001"], "nome": ["Uno"], "religioso": ["si"], "fonte_geometria": ["catalogo"]})
+    cammini = pd.DataFrame({UNICO: ["u001"], "nome": ["Uno"], "religioso": ["si"]})
     comune_table = pd.DataFrame({
         COMUNE: ["063049"], "comune": ["Napoli"], "sigla": ["NA"], "cod_uts": [63], "provincia": ["Napoli"],
         "cod_reg": [15], "regione": ["Campania"],
@@ -919,3 +965,9 @@ def test_partenza_pubblicata_su_un_omonimo_lontano_dal_percorso_si_scarta() -> N
     # un comune attraversato dal cammino vale; i cammini senza comuni non si considerano
     assert pairs.split_starts(membri, {"cdi:1": "E"}, comuni_of)[0] == {"cdi:1": "E"}
     assert pairs.split_starts(membri, resolved, {}) == ({}, {})
+
+
+def test_standin_mezzo_without_labelled_relation_raises() -> None:
+    assert pairs._standin_mezzo("r1|r2", {"r1": ["piedi"], "r2": ["bici"]}) == "entrambi"
+    with pytest.raises(pairs.PairsError, match="r9"):
+        pairs._standin_mezzo("r9", {})

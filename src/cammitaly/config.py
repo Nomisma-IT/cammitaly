@@ -1,6 +1,6 @@
 """Unica sede di tutte le costanti: percorsi, URL, ritmo delle richieste, tetti."""
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
@@ -342,6 +342,7 @@ TAGS_CAMMINI_FIELDS = [
 ]
 # Valori nei dati intermedi: ASCII ("si", mai "sì"); i campi multivalore sono uniti da LIST_SEPARATOR e ordinati
 MEZZO_PIEDI, MEZZO_BICI, MEZZO_ENTRAMBI = "piedi", "bici", "entrambi"
+MEZZO_NESSUNO = ""  # cammino senza alcuna traccia: nessun dato dice come si percorre
 SI, NO = "si", "no"
 LIST_SEPARATOR = "|"
 EVIDENZA_SILENTE = "nessuna fonte"
@@ -441,9 +442,9 @@ PAIRS_COMUNE_COLUMNS = {
     COMUNE_NAME_COL: "comune", PROVINCE_SIGLA_COL: "sigla", PROVINCE_CODE_COL: "cod_uts",
     PROVINCE_NAME_COL: "provincia", COMUNE_REGION_COL: "cod_reg", REGION_NAME_COL: "regione",
 }
-FONTE_GEOMETRIA_CATALOGO, FONTE_GEOMETRIA_OSM, FONTE_GEOMETRIA_NESSUNA = "catalogo", "osm", "nessuna"
-# Tracce di catalogo di un membro insieme al sostituto OSM di un altro membro dello stesso cammino distinto
-FONTE_GEOMETRIA_CATALOGO_OSM = "catalogo e osm"
+# fonte_geometria: fonti (FONTI_GEOMETRIA, dal prefisso del tratta_id) delle tracce entro d dal comune, unite da
+# LIST_SEPARATOR e ordinate; nel cammino l'unione sulle sue coppie, FONTE_GEOMETRIA_NESSUNA se non ha coppie
+FONTE_GEOMETRIA_NESSUNA = "nessuna"
 PAIRS_COPERTURA_DECIMALS = 2
 PAIRS_LUNGHEZZA_DECIMALS = 1  # lunghezza_tracciata_km
 # Ordinamento naturale degli id delle tracce: i gruppi di cifre si confrontano come numeri ("tappa 2" prima di "tappa 10")
@@ -719,254 +720,416 @@ CALIBRATION_FILES_C = {"coppie": "C_coppie.csv", "dettaglio": "C_dettaglio.csv"}
 CALIBRATION_FILES_D = {"costi": "D_costi.csv", "grazing": "D_grazing.csv"}
 
 # --- Cartella di lavoro (workbook.py) ---
-# Ingressi: i due file del contratto P5 (PAIRS_DIR e PAIRS_FILES). Uscita: un file per giorno di elaborazione
+# Ingressi: i due file del contratto delle coppie (PAIRS_DIR e PAIRS_FILES). Uscita: un file per giorno di elaborazione
 WORKBOOK_OUTPUT_DIR = DATA_DIR / "output"
-WORKBOOK_FILE_TEMPLATE = "cammini_comuni_{data}.xlsx"  # {data} = data di elaborazione, AAAA-MM-GG
-WORKBOOK_SHEET_COMUNI, WORKBOOK_SHEET_CAMMINI = "Comuni", "Cammini"
-WORKBOOK_SHEET_COPPIE, WORKBOOK_SHEET_NOTE = "Coppie", "Note"
+WORKBOOK_FILE_TEMPLATE = "Cammini Comuni {data}.xlsx"  # {data} = data di elaborazione in WORKBOOK_FILE_DATE_FORMAT
+WORKBOOK_FILE_DATE_FORMAT = "%d.%m.%Y"
+WORKBOOK_TITLE = "Cammini Comuni"
+WORKBOOK_SHEET_LEGENDA, WORKBOOK_SHEET_COMUNI, WORKBOOK_SHEET_CAMMINI = "Legenda", "Comuni", "Cammini"
+WORKBOOK_SHEET_TERRITORI, WORKBOOK_SHEET_ATTRIBUTI, WORKBOOK_SHEET_COPPIE = "Territori", "Cammini per attributo", "Coppie"
+WORKBOOK_SHEET_PIVOT_TEMPLATE = "Territori x {nome}"
+# Caratteristiche dei cammini nei fogli Territori x e Cammini per attributo, nell'ordine dei fogli:
+# (nome nel foglio, chiave del foglio Cammini, piu' valori per cammino, territoriale). Territoriale: il valore viene dalle
+# sole coppie del cammino dentro il territorio (mezzo e fonti dei tracciati li'), non dal cammino intero
+WORKBOOK_DIMENSIONS = (
+    ("Religioso", "religioso", False, False), ("Mezzo", "mezzo", False, True), ("Forma", "tipologia", False, False),
+    ("Portata", "portata", False, False), ("Tema", "tema", True, False), ("Stagione", "stagione", True, False),
+    ("Segnaletica", "segnaletica", False, False), ("Credenziale", "credenziale", False, False),
+    ("Catalogo", "fonti", False, False), ("Fonte", "fonte_geometria", False, True),
+)
+WORKBOOK_PIVOT_SHEETS = tuple(WORKBOOK_SHEET_PIVOT_TEMPLATE.format(nome=name) for name, *_ in WORKBOOK_DIMENSIONS)
+# Ordine dei fogli: guida, dati, tabelle per territorio (come i breakdown del committente), tabella di base in fondo
+WORKBOOK_SHEET_ORDER = (
+    WORKBOOK_SHEET_LEGENDA, WORKBOOK_SHEET_COMUNI, WORKBOOK_SHEET_CAMMINI, WORKBOOK_SHEET_TERRITORI,
+    *WORKBOOK_PIVOT_SHEETS, WORKBOOK_SHEET_ATTRIBUTI, WORKBOOK_SHEET_COPPIE,
+)
+# La Legenda descrive i dieci fogli Territori x una volta sola, sotto questo nome
+WORKBOOK_PIVOT_LEGEND_NAME = WORKBOOK_SHEET_PIVOT_TEMPLATE.format(
+    nome="(" + ", ".join(name for name, *_ in WORKBOOK_DIMENSIONS) + ")"
+)
+# Titolo in cima ai fogli Territori, Territori x e Cammini per attributo: una frase che dice che cosa si conta (il nome del
+# foglio resta quello di WORKBOOK_SHEET_*). Territori x: la caratteristica come si legge nella frase, per nome di WORKBOOK_DIMENSIONS
+WORKBOOK_TERRITORI_TITLE = "Comuni attraversati e cammini per territorio"
+WORKBOOK_ATTRIBUTI_TITLE = "Cammini in Italia e loro medie per valore di ciascuna caratteristica"
+WORKBOOK_PIVOT_TITLE_TEMPLATE = "Cammini per territorio e {caratteristica}"
+WORKBOOK_PIVOT_CHARACTERISTICS = {
+    "Religioso": "carattere religioso", "Mezzo": "mezzo", "Forma": "forma del percorso", "Portata": "portata",
+    "Tema": "tema", "Stagione": "stagione consigliata", "Segnaletica": "segnaletica", "Credenziale": "credenziale del pellegrino",
+    "Catalogo": "catalogo di provenienza", "Fonte": "fonte del tracciato",
+}
+# Riga di separazione della Legenda prima delle colonne di ogni foglio
+WORKBOOK_SHEET_DESCRIPTIONS = {
+    WORKBOOK_SHEET_COMUNI: "una riga per comune attraversato da almeno un cammino",
+    WORKBOOK_SHEET_CAMMINI: "una riga per cammino, con le sue caratteristiche e i comuni nell'ordine del percorso",
+    WORKBOOK_SHEET_TERRITORI: "una riga per territorio (Italia, regioni, province, comuni attraversati) con comuni e cammini",
+    WORKBOOK_PIVOT_LEGEND_NAME: "un foglio per caratteristica; per ogni territorio, i cammini per valore della caratteristica",
+    WORKBOOK_SHEET_ATTRIBUTI: "in Italia, numero di cammini e loro medie per ciascun valore delle caratteristiche",
+    WORKBOOK_SHEET_COPPIE: "una riga per ogni coppia di cammino e comune attraversato: la tabella da cui derivano gli altri fogli",
+}
 # Colonne attese nei due file: quelle del contratto, definite una volta sola nella sezione Coppie
 WORKBOOK_COPPIE_FIELDS = PAIRS_COPPIE_FIELDS
-WORKBOOK_TAG_FIELDS = PAIRS_MULTI_FIELDS
 WORKBOOK_CAMMINI_FIELDS = PAIRS_CAMMINI_FIELDS
-# Colonne di ogni foglio (chiave -> intestazione in WORKBOOK_HEADERS)
-WORKBOOK_COMUNI_KEYS = (
-    "cod_reg", "regione", "cod_uts", "provincia", "sigla", "PRO_COM_T", "comune",
-    "mezzo", "religioso", "n_cammini", "cammini",
-)
-WORKBOOK_COPPIE_KEYS = (*WORKBOOK_COPPIE_FIELDS, *WORKBOOK_TAG_FIELDS)
-WORKBOOK_HEADERS = {
-    "cod_reg": "Codice regione", "regione": "Regione", "cod_uts": "Codice provincia", "provincia": "Provincia",
-    "sigla": "Sigla", "PRO_COM_T": "Codice comune", "comune": "Comune", "mezzo": "Mezzo",
-    "religioso": "Religioso", "n_cammini": "Numero cammini", "cammini": "Cammini",
-    "cammino_unico_id": "Codice cammino", "nome": "Cammino", "alias": "Altri nomi", "fonti": "Fonti",
-    "membri": "Codici nelle fonti", "evidenza_religioso": "Indicazione del carattere religioso",
-    "tipologia": "Tipologia", "portata": "Portata", "tema": "Tema", "stagione": "Stagione",
-    "credenziale": "Credenziale", "segnaletica": "Segnaletica", "data_catalogo": "Data nel catalogo",
-    "regioni": "Regioni", "lunghezza_dichiarata_km": "Lunghezza dichiarata (km)",
-    "lunghezza_tracciata_km": "Lunghezza del tracciato (km)", "copertura": "Copertura del tracciato",
-    "fonte_geometria": "Fonte del tracciato", "nota": "Nota", "n_comuni": "Numero comuni",
-    "ordine": "Ordine lungo il cammino", "distanza_m": "Distanza dal comune (m)", "dentro": "Dentro il comune",
-}
-WORKBOOK_RAGGED_HEADER = "Comune {numero}"  # colonne dei comuni del foglio Cammini, nell'ordine del percorso
-WORKBOOK_RAGGED_FORMAT = "{comune} ({sigla})"  # esistono comuni omonimi in province diverse
-# Codici ISTAT scritti come testo, con gli zeri iniziali: cifre per chiave
+# Lettura dei tipi. Codici ISTAT scritti come testo, con gli zeri iniziali: cifre per chiave
 WORKBOOK_CODE_DIGITS = {"cod_reg": 2, "cod_uts": 3, "PRO_COM_T": 6}
 WORKBOOK_INT_KEYS = ("ordine", "n_comuni")
 WORKBOOK_FLOAT_KEYS = ("distanza_m", "lunghezza_dichiarata_km", "lunghezza_tracciata_km", "copertura")
 WORKBOOK_BOOL_KEY = "dentro"
 WORKBOOK_ENUM_KEYS = ("mezzo", "religioso")  # ammessi solo i valori di WORKBOOK_VALUE_LABELS
+WORKBOOK_CAMMINI_BLANK_ENUM_KEYS = ("mezzo",)  # nei cammini il valore puo' mancare (cammino senza tracce); nelle coppie mai
 WORKBOOK_TRUE_VALUES, WORKBOOK_FALSE_VALUES = ("true", "1", "si"), ("false", "0", "no")
 # Colonne con piu' valori uniti da LIST_SEPARATOR nei dati intermedi: nel foglio sono separati da WORKBOOK_CELL_SEPARATOR
-WORKBOOK_LIST_KEYS = (
-    "alias", "fonti", "membri", "regioni", "fonte_geometria", "evidenza_religioso", *WORKBOOK_TAG_FIELDS,
-)
+WORKBOOK_LIST_KEYS = ("alias", "regioni", "evidenza_religioso", *PAIRS_MULTI_FIELDS)
 WORKBOOK_CELL_SEPARATOR = "; "
+WORKBOOK_LINK_SEPARATOR = "\n"  # piu' schede di un catalogo: un indirizzo per riga, il collegamento sul primo
 # Valori scritti come slug nei dati ("arte-e-cultura"): nel foglio si leggono come parole
 WORKBOOK_WORD_KEYS = ("tema",)
-# Date ISO nei dati intermedi: nel foglio una data sola e' una data di Excel con questo formato, piu' date sono testo
-WORKBOOK_DATE_KEYS = ("data_catalogo",)
-WORKBOOK_DATE_NUMBER_FORMAT = "DD/MM/YYYY"
 WORKBOOK_SLUG_SEPARATOR = "-"
-# Etichette di visualizzazione; l'ordine dei dizionari e' l'ordine delle righe di dettaglio del foglio Comuni
-WORKBOOK_MEZZO_LABELS = {MEZZO_PIEDI: "A piedi", MEZZO_BICI: "In bici", MEZZO_ENTRAMBI: "A piedi e in bici"}
-WORKBOOK_SI_NO_LABELS = {SI: "Sì", NO: "No"}
-WORKBOOK_ALL_LABEL = "Tutti"  # Mezzo e Religioso della riga di totale di un comune
-WORKBOOK_VALUE_LABELS = {
-    "mezzo": WORKBOOK_MEZZO_LABELS,
-    "religioso": WORKBOOK_SI_NO_LABELS,
-    "fonti": {
-        CDI_FONTE: "camminiditalia.org", MITUR_FONTE: "Catalogo dei cammini religiosi del Ministero del Turismo",
-        OSM_FONTE: "OpenStreetMap",
-    },
-    "fonte_geometria": {
-        FONTE_GEOMETRIA_CATALOGO: "Catalogo", FONTE_GEOMETRIA_OSM: "OpenStreetMap",
-        FONTE_GEOMETRIA_CATALOGO_OSM: "Catalogo e OpenStreetMap", FONTE_GEOMETRIA_NESSUNA: "Nessuna",
-    },
-    "credenziale": WORKBOOK_SI_NO_LABELS,
-    "segnaletica": WORKBOOK_SI_NO_LABELS,
-}
-# Registro delle richieste (REQUESTS_LOG): le richieste riuscite di ogni fonte danno la data di scarico del foglio Note.
-# Chiave = segnaposto nelle righe di WORKBOOK_NOTE_SECTIONS, valore = host del registro (HOST_*) di quella fonte
-WORKBOOK_SOURCE_HOSTS = {
-    "data_cdi": (HOST_CDI, HOST_MAPHUB, HOST_S3), "data_mitur": (HOST_MITUR,),
-    "data_osm": (HOST_GEOFABRIK,), "data_istat": (HOST_ISTAT,),
-}
-WORKBOOK_LOG_OK_STATUS = "200"
-WORKBOOK_DOWNLOAD_ONE, WORKBOOK_DOWNLOAD_RANGE = "il {first}", "dal {first} al {last}"
-WORKBOOK_DOWNLOAD_MISSING = "in data non registrata"
-# Righe di dettaglio di un comune sotto il totale: riassunte con lo schema a righe di Excel, chiuse all'apertura
-WORKBOOK_OUTLINE_LEVEL = 1
-WORKBOOK_FREEZE_CELL = "A2"  # sotto la riga di intestazione
-WORKBOOK_WIDTH_MIN, WORKBOOK_WIDTH_MAX, WORKBOOK_WIDTH_PADDING = 8, 60, 2
-WORKBOOK_NOTE_WIDTH = 120
+# Date ISO nei dati intermedi: nel foglio una data sola e' una data di Excel, piu' date sono testo
+WORKBOOK_DATE_KEYS = ("data_catalogo",)
 WORKBOOK_DATE_DISPLAY_FORMAT = "%d/%m/%Y"
-# Foglio Note: (titolo della sezione, righe). I segnaposto {distanza_m}, {anno_istat}, {data} si riempiono dai parametri;
-# {data_cdi}, {data_mitur}, {data_osm}, {data_istat} dal registro delle richieste (WORKBOOK_SOURCE_HOSTS)
-WORKBOOK_NOTE_SECTIONS = (
-    ("Contenuto della cartella di lavoro", (
-        "Comuni: per ogni comune una riga di totale, in grassetto, con il numero e i nomi dei cammini che lo attraversano; "
-        "sotto, le righe di dettaglio per mezzo e carattere religioso, raggruppate e chiuse (si aprono con il segno + a sinistra).",
-        "Cammini: una riga per cammino, con le sue caratteristiche e i comuni attraversati nell'ordine del percorso.",
-        "Coppie: una riga per ogni coppia cammino e comune, con i dati dell'incrocio e le caratteristiche del cammino.",
-    )),
-    ("Significato delle colonne", (
-        "Codice regione, Codice provincia, Codice comune: codici ISTAT, scritti come testo con gli zeri iniziali (2, 3 e 6 cifre).",
-        "Sigla: sigla della provincia.",
-        "Mezzo: come è pubblicato il cammino. A piedi o In bici; A piedi e in bici quando le fonti lo pubblicano in entrambi i modi. "
-        "Nel foglio Comuni e nel foglio Coppie si riferisce ai tracciati del cammino che passano vicino a quel comune. "
-        "Nella riga di totale di un comune vale Tutti.",
-        "Religioso: Sì se almeno una fonte indica il cammino come religioso (Catalogo dei cammini religiosi del Ministero del Turismo, "
-        "tema spirituale su camminiditalia.org o sulla mappa Cammini d'Italia, pellegrinaggio in OpenStreetMap) o se il nome del "
-        "cammino contiene una parola religiosa (ad esempio San, Santa, Romea), altrimenti No. Nella riga di totale di un comune vale Tutti.",
-        "Numero cammini: cammini diversi che attraversano il comune. Il totale conta ogni cammino una volta; le righe di dettaglio sommano al totale.",
-        "Cammini: nomi dei cammini in ordine alfabetico, separati da punto e virgola.",
-        "Codice cammino: identificativo del cammino in questa cartella di lavoro. Cammino: nome del cammino. "
-        "Altri nomi: nomi con cui lo stesso cammino compare nelle altre fonti.",
-        "Fonti: fonti in cui il cammino compare; un cammino presente in più fonti è contato una sola volta. "
-        "Codici nelle fonti: identificativi del cammino presso le singole fonti.",
-        "Indicazione del carattere religioso: da che cosa risulta la scelta tra Sì e No.",
-        "Tipologia, Portata, Tema, Stagione, Credenziale, Segnaletica, Data nel catalogo: informazioni pubblicate dalle fonti; "
-        "se le fonti non concordano compaiono tutti i valori.",
-        "Regioni: regioni indicate dalle fonti.",
-        "Lunghezza dichiarata (km): lunghezza pubblicata dalla fonte da cui viene il tracciato misurato. Lunghezza del tracciato (km): "
-        "lunghezza di quel tracciato, contando una volta sola le parti ripetute. "
-        "Copertura del tracciato: quota della lunghezza dichiarata coperta dal tracciato (al massimo 1), quando entrambe sono note.",
-        "Fonte del tracciato: Catalogo, OpenStreetMap, Catalogo e OpenStreetMap (quando il cammino ha tracciati del catalogo e, "
-        "per un'altra sua versione, di OpenStreetMap) o Nessuna quando del cammino non c'è un tracciato. Nota: osservazioni sul cammino.",
-        "Numero comuni: comuni attraversati dal cammino. Comune 1, Comune 2, ...: i comuni nell'ordine del percorso, con la sigla della provincia.",
-        "Ordine lungo il cammino: posizione del comune sul percorso, a partire da 1. I comuni seguono il percorso dalla partenza "
-        "all'arrivo; per i cammini con più rami seguono un ramo dopo l'altro. Per i tracciati presi da OpenStreetMap senza una "
-        "partenza pubblicata il verso non è garantito.",
-        "Distanza dal comune (m): distanza minima del tracciato dal confine del comune. "
-        "Dentro il comune: Sì se il tracciato tocca o entra nel comune, No se passa fuori ma a distanza non superiore a quella indicata sotto.",
-    )),
-    ("Parametri", (
-        "Distanza: un cammino è associato a un comune se il suo tracciato dista dal confine comunale al massimo {distanza_m} m.",
-        "Confini comunali: ISTAT, edizione al 1 gennaio {anno_istat}.",
-        "Data di elaborazione: {data}.",
-    )),
-    ("Fonti", (
-        "camminiditalia.org: elenco e tracciati dei cammini del portale Cammini d'Italia. Scaricato {data_cdi}. "
-        "Dati di Cammini d'Italia S.R.L., usati in base al contratto «Commercial Data License Agreement and API access term» stipulato con Nomisma: Nomisma può condividerli con i propri partner, che non possono ridistribuirli.",
-        "Catalogo dei cammini religiosi del Ministero del Turismo: elenco e tracciati dei cammini religiosi. Scaricato {data_mitur}.",
-        "OpenStreetMap, estratto di Geofabrik: relazioni di percorso. Scaricato {data_osm}. © OpenStreetMap contributors, ODbL "
-        "(https://www.openstreetmap.org/copyright).",
-        "ISTAT, confini delle unità amministrative a fini statistici. Scaricato {data_istat}. "
-        "Licenza CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/), fonte: ISTAT.",
-    )),
+# Etichette dei valori nel foglio (i dati intermedi restano ASCII); l'ordine dei dizionari e' l'ordine nei riepiloghi
+WORKBOOK_SI_NO_LABELS = {SI: "sì", NO: "no"}
+WORKBOOK_MEZZO_LABELS = {MEZZO_PIEDI: "a piedi", MEZZO_BICI: "in bici", MEZZO_ENTRAMBI: "a piedi e in bici"}
+WORKBOOK_FORMA_LABELS = {"lineare": "lineare", "anello": "ad anello"}
+WORKBOOK_SOURCE_LABELS = {CDI_FONTE: "Cammini d'Italia", MITUR_FONTE: "MiTur", OSM_FONTE: "OpenStreetMap"}
+WORKBOOK_NAMES_JOIN, WORKBOOK_NAMES_LAST_JOIN = ", ", " e "  # due nomi "A e B", tre "A, B e C"
+WORKBOOK_VALUE_LABELS = {
+    "mezzo": WORKBOOK_MEZZO_LABELS, "religioso": WORKBOOK_SI_NO_LABELS, "tipologia": WORKBOOK_FORMA_LABELS,
+    "credenziale": WORKBOOK_SI_NO_LABELS, "segnaletica": WORKBOOK_SI_NO_LABELS,
+}
+# Etichette vuote: la fonte non pubblica il dato o il cammino non ha tracce (tutte tranne le date, che restano celle vuote)
+WORKBOOK_EMPTY_LABEL = "non indicato"
+WORKBOOK_EMPTY_LABEL_KEYS = ("mezzo", "tipologia", "portata", "tema", "stagione", "credenziale", "segnaletica")
+WORKBOOK_NO_TRACK_LABEL = "nessun tracciato"  # fonte_geometria = FONTE_GEOMETRIA_NESSUNA
+WORKBOOK_PASSAGGIO_DENTRO = "dentro il comune"
+WORKBOOK_PASSAGGIO_VICINO = f"entro {CROSSING_DISTANCE_M} m dal confine"
+WORKBOOK_RAGGED_FORMAT = "{comune} ({sigla})"  # comuni del foglio Cammini: esistono comuni omonimi in province diverse
+WORKBOOK_RAGGED_FORMAT_VICINO = f"{{comune}} ({{sigla}}, entro {CROSSING_DISTANCE_M} m)"
+WORKBOOK_TOTAL_LABEL = "Totale"
+# Livelli dei fogli per territorio (0 = Italia ... 3 = Comune): rientro dell'etichetta e livello dello schema a righe
+WORKBOOK_LEVEL_LABELS = ("Italia", "Regione", "Provincia", "Comune")
+# Pagine del Catalogo dei Cammini religiosi: le schede MiTur non hanno una pagina propria, si apre la pagina di elenco
+MITUR_LISTING_URL = "https://www.ministeroturismo.gov.it/catalogo-dei-cammini-religiosi-italiani/"
+MITUR_LISTING_PAGE_URL = MITUR_LISTING_URL + "page/{pagina}/"
+# Registro delle richieste (REQUESTS_LOG): le richieste riuscite di ogni fonte danno la data di scaricamento della Legenda
+WORKBOOK_LOG_OK_STATUS = "200"
+WORKBOOK_DOWNLOAD_ONE, WORKBOOK_DOWNLOAD_RANGE = "{first}", "dal {first} al {last}"
+WORKBOOK_DOWNLOAD_MISSING = "non registrata"
+
+# Stile (come il Tracker Scenari Macro del committente): Calibri 11, intestazioni in grassetto centrate e a capo
+WORKBOOK_FONT_NAME, WORKBOOK_FONT_SIZE = "Calibri", 11
+WORKBOOK_HEADER_HEIGHT = 45
+WORKBOOK_TITLE_SIZE, WORKBOOK_TITLE_COLOR = 16, "1F3864"
+WORKBOOK_SECTION_SIZE = 14  # titoli dei blocchi della Legenda
+WORKBOOK_SUBTITLE_COLOR = "595959"  # sottotitolo "Aggiornato: ..." e note sotto le tabelle
+WORKBOOK_SUBTITLE_TEMPLATE = "Aggiornato: {data}"
+WORKBOOK_LINK_COLOR = "0563C1"
+WORKBOOK_MARGIN_WIDTH = 2  # colonna A vuota dei fogli Legenda e Cammini per attributo
+WORKBOOK_REGION_FILL = "D9E1F2"  # righe Regione dei fogli per territorio
+WORKBOOK_BAND_HEIGHT = 30  # riga delle etichette dei valori sopra le coppie di colonne
+WORKBOOK_PIVOT_FROZEN_COLUMNS = 3  # Livello, Codice, Territorio
+WORKBOOK_FMT_TEXT, WORKBOOK_FMT_COUNT, WORKBOOK_FMT_DECIMAL = "@", "#,##0", "0.0"
+WORKBOOK_FMT_SHARE, WORKBOOK_FMT_DATE, WORKBOOK_FMT_GENERAL = "0.0%", "DD/MM/YYYY", "General"
+# Colonne di identita' bloccate a sinistra (oltre alla riga di intestazione) nei fogli di dati
+WORKBOOK_FROZEN_COLUMNS = {WORKBOOK_SHEET_COMUNI: 7, WORKBOOK_SHEET_CAMMINI: 2, WORKBOOK_SHEET_COPPIE: 4}
+
+# Tipi di "Valori" della Legenda, calcolati sui dati a ogni elaborazione: numeri e date "da X a Y", categorie i valori
+# presenti. Ogni altro testo e' la forma fissa dei valori (codici, nomi, testo libero)
+WORKBOOK_VALUES_NUMBER, WORKBOOK_VALUES_DATE, WORKBOOK_VALUES_CATEGORY = "numero", "data", "categoria"
+WORKBOOK_VALUES_RANGE = "da {low} a {high}"
+WORKBOOK_VALUES_NONE = "nessun valore"
+WORKBOOK_VALUES_JOIN = ", "
+WORKBOOK_GROUP_K = "{k}"  # segnaposto delle colonne ripetute (Cammino k, Comune k)
+WORKBOOK_GROUP_LABEL = "{first} ... {last}"  # nome di un gruppo di colonne ripetute nella Legenda
+# Chiavi del registro usate anche dal codice che scrive le righe (una definizione sola)
+WORKBOOK_COMUNE_CAMMINO_KEY = "cammino_{k}"  # foglio Comuni
+WORKBOOK_PIVOT_N_KEY, WORKBOOK_PIVOT_SHARE_KEY = "valore_n_{k}", "valore_incidenza_{k}"  # fogli Territori x
+WORKBOOK_CROSS_MODE_KEY = "x_{mode}"  # Religioso per mezzo: una colonna per mezzo
+# Religioso per mezzo: i mezzi e, in fondo, i cammini senza mezzo (chiave "nessuno", mai valore dei dati)
+WORKBOOK_CROSS_MODE_LABELS = {**WORKBOOK_MEZZO_LABELS, "nessuno": WORKBOOK_EMPTY_LABEL}
+
+
+@dataclass(frozen=True)
+class WorkbookColumn:
+    """Una colonna di un foglio: unica fonte di intestazione, larghezza, formato e testi della Legenda.
+
+    Le colonne ripetute (Cammino k, Comune k) hanno WORKBOOK_GROUP_K in key e header."""
+
+    key: str
+    header: str
+    width: float
+    contains: str  # Che cosa contiene
+    reading: str  # Come leggerla
+    values: str  # WORKBOOK_VALUES_* oppure la forma fissa dei valori
+    number_format: str = WORKBOOK_FMT_GENERAL
+    unit: str = ""
+    multi: bool = False  # piu' valori nella cella, separati da WORKBOOK_CELL_SEPARATOR
+    wrap: bool = False
+    link: bool = False
+    band: str = ""  # etichetta sopra la colonna (riga delle coppie dei fogli per territorio), unita alle vicine uguali
+
+
+_D = CROSSING_DISTANCE_M
+_C = WorkbookColumn
+_NAME_ISTAT = "nome ISTAT"
+_COL_COD_REG = _C("cod_reg", "Codice regione", 10, "Codice ISTAT della regione.",
+                  "Testo, non numero: collega il foglio ad altri dati ISTAT.", "2 cifre con lo zero iniziale", WORKBOOK_FMT_TEXT)
+_COL_REGIONE = _C("regione", "Regione", 22, "Nome della regione.", "Confini ISTAT dell'anno di elaborazione.", _NAME_ISTAT)
+_COL_COD_UTS = _C("cod_uts", "Codice provincia", 10, "Codice ISTAT della provincia o città metropolitana.",
+                  "Testo, non numero: collega il foglio ad altri dati ISTAT.", "3 cifre con gli zeri iniziali", WORKBOOK_FMT_TEXT)
+_COL_PROVINCIA = _C("provincia", "Provincia", 24, "Nome della provincia o città metropolitana.",
+                    "Confini ISTAT dell'anno di elaborazione.", _NAME_ISTAT)
+_COL_SIGLA = _C("sigla", "Sigla", 7, "Sigla della provincia.", "Distingue i comuni omonimi.", "2 lettere maiuscole")
+_COL_PRO_COM = _C(COMUNE_ID_COL, "Codice comune", 10, "Codice ISTAT del comune.",
+                  "Testo, non numero: collega il foglio ad altri dati ISTAT.", "6 cifre con gli zeri iniziali", WORKBOOK_FMT_TEXT)
+# Come si stabilisce l'ordine dei comuni: stesse regole di pairs.py (chain_anchors, chain_stages, route_positions)
+_ORDINE_REGOLA = (
+    "I comuni sono numerati lungo una linea principale del cammino. La partenza è il comune di partenza pubblicato dalla "
+    "scheda, se è uno dei comuni del cammino; altrimenti l'inizio della sezione più lunga che sta a un capo libero del "
+    "cammino; altrimenti l'inizio della tappa col numero più basso. Un cammino senza tappe numerate segue il verso "
+    "memorizzato nel suo file di tracciato, quindi il verso non è garantito. Un comune che la linea principale non "
+    f"attraversa e da cui non passa a meno di {_D} m (lo raggiungono solo varianti, altre versioni o tracciati in bici) è "
+    "collocato nel punto della linea principale più vicino a lui."
+)
+_COL_COMUNE = _C("comune", "Comune", 28, "Nome del comune.", "Confini ISTAT dell'anno di elaborazione.", _NAME_ISTAT)
+_COL_CODICE_CAMMINO = _C("cammino_unico_id", "Codice cammino", 10, "Identificativo del cammino in questo file.",
+                         "Collega il foglio Cammini al foglio Coppie; un cammino presente in più cataloghi ha un solo codice.",
+                         "u seguito da un numero (ad esempio u001)")
+_COL_CAMMINO = _C("nome", "Cammino", 34, "Nome del cammino.",
+                  "Per un cammino pubblicato più volte, il nome della scheda principale; gli altri sono in Altri nomi.",
+                  "testo", wrap=True)
+_COL_MEZZO = _C("mezzo", "Mezzo", 14, "Come sono pubblicati i tracciati del cammino.",
+                "a piedi e in bici quando le fonti pubblicano tracciati per entrambi o un tracciato per entrambi. "
+                f"{WORKBOOK_EMPTY_LABEL}: il cammino non ha un tracciato, quindi nessun dato dice come si percorre.",
+                WORKBOOK_VALUES_CATEGORY)
+_COL_RELIGIOSO = _C("religioso", "Religioso", 10, "Carattere religioso del cammino.",
+                    "sì se almeno una fonte indica il cammino come religioso (Catalogo dei Cammini religiosi del Ministero "
+                    "del Turismo, tema spirituale su Cammini d'Italia, pellegrinaggio in OpenStreetMap) o se il nome contiene "
+                    "una parola religiosa (ad esempio San, Santa, Romea); altrimenti no.", WORKBOOK_VALUES_CATEGORY)
+_COL_FONTE_TRACCIATO = _C("fonte_geometria", "Fonte del tracciato", 24,
+                          "Fonti dei tracciati da cui risultano i comuni del cammino.",
+                          "Cammini d'Italia e MiTur: tracce GPS dei cataloghi. OpenStreetMap: relazione di percorso OSM "
+                          "abbinata al cammino, usata solo per le versioni del cammino senza tracce nei cataloghi. "
+                          f"{WORKBOOK_NO_TRACK_LABEL}: il cammino non ha comuni.", WORKBOOK_VALUES_CATEGORY)
+_TWO_VALUES = (
+    "Se la scheda pubblica due valori, il cammino li mostra entrambi (ad esempio «{example}») e conta come quella "
+    "combinazione, non sotto ciascun valore."
+)
+_COL_FORMA = _C("tipologia", "Forma", 12, "Forma del percorso pubblicata da Cammini d'Italia.",
+                f"{WORKBOOK_EMPTY_LABEL}: Cammini d'Italia non la pubblica o il cammino è solo nel catalogo MiTur. "
+                + _TWO_VALUES.format(example="ad anello; lineare"), WORKBOOK_VALUES_CATEGORY)
+_COL_PORTATA = _C("portata", "Portata", 14, "Portata del cammino pubblicata da Cammini d'Italia.",
+                  f"{WORKBOOK_EMPTY_LABEL}: Cammini d'Italia non la pubblica o il cammino è solo nel catalogo MiTur. "
+                  + _TWO_VALUES.format(example="nazionale; regionale"), WORKBOOK_VALUES_CATEGORY)
+_COL_TEMA = _C("tema", "Tema", 26, "Temi del cammino pubblicati da Cammini d'Italia (sito e mappa).",
+               "Più temi separati da punto e virgola; nei fogli Territori x Tema e Cammini per attributo un cammino conta "
+               "sotto ogni suo tema.",
+               WORKBOOK_VALUES_CATEGORY, multi=True, wrap=True)
+_COL_STAGIONE = _C("stagione", "Stagione", 24, "Stagioni consigliate da Cammini d'Italia (sito e mappa).",
+                   "Più stagioni separate da punto e virgola; nei fogli Territori x Stagione e Cammini per attributo un cammino "
+                   "conta sotto ogni sua stagione.",
+                   WORKBOOK_VALUES_CATEGORY, multi=True, wrap=True)
+_COL_CREDENZIALE = _C("credenziale", "Credenziale del pellegrino", 14,
+                      "Se la scheda del cammino nel catalogo MiTur elenca il servizio «Credenziali» tra le icone dei servizi.",
+                      "Dato del solo catalogo MiTur. sì: la scheda MiTur mostra l'icona; no: la scheda MiTur non la mostra; "
+                      f"{WORKBOOK_EMPTY_LABEL}: il cammino non ha una scheda MiTur.", WORKBOOK_VALUES_CATEGORY)
+_COL_SEGNALETICA = _C("segnaletica", "Segnaletica", 12,
+                      "Se la scheda del cammino nel catalogo MiTur elenca il servizio «Segnaletica» tra le icone dei servizi.",
+                      "Dato del solo catalogo MiTur. sì: la scheda MiTur mostra l'icona; no: la scheda MiTur non la mostra; "
+                      f"{WORKBOOK_EMPTY_LABEL}: il cammino non ha una scheda MiTur.", WORKBOOK_VALUES_CATEGORY)
+_COLS_TAGS = (_COL_FORMA, _COL_PORTATA, _COL_TEMA, _COL_STAGIONE, _COL_CREDENZIALE, _COL_SEGNALETICA)
+_COL_PASSAGGIO = _C("passaggio", "Passaggio", 20, "Come il tracciato del cammino passa per il comune.",
+                    f"{WORKBOOK_PASSAGGIO_DENTRO}: il tracciato tocca o entra nel comune; {WORKBOOK_PASSAGGIO_VICINO}: "
+                    f"passa fuori, a non più di {_D} m dal confine.", WORKBOOK_VALUES_CATEGORY)
+WORKBOOK_COMUNI_COLUMNS = (
+    _COL_COD_REG, _COL_REGIONE, _COL_COD_UTS, _COL_PROVINCIA, _COL_SIGLA, _COL_PRO_COM, _COL_COMUNE,
+    _C("n_cammini", "N. cammini", 10, "Cammini che attraversano il comune.",
+       "Un cammino presente in più cataloghi conta una volta; il dettaglio per caratteristica è nei fogli Territori x.",
+       WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT, "cammini"),
+    _C(WORKBOOK_COMUNE_CAMMINO_KEY, "Cammino {k}", 30, "Nome del k-esimo cammino che attraversa il comune, in ordine alfabetico.",
+       "Cammino k, Mezzo k, Religioso k e Passaggio k descrivono lo stesso cammino; dopo l'ultimo cammino del comune "
+       "le colonne restano vuote.", "testo", wrap=True),
+    _C("mezzo_{k}", "Mezzo {k}", 14, "Come sono pubblicati i tracciati del cammino k vicini al comune.",
+       f"Contano i soli tracciati entro {_D} m dal comune: un cammino a piedi e in bici può passare per il comune solo a piedi.",
+       WORKBOOK_VALUES_CATEGORY),
+    _C("religioso_{k}", "Religioso {k}", 10, "Carattere religioso del cammino k.", "Vedi Religioso nel foglio Cammini.",
+       WORKBOOK_VALUES_CATEGORY),
+    _C("passaggio_{k}", "Passaggio {k}", 20, "Come il tracciato del cammino k passa per il comune.", _COL_PASSAGGIO.reading,
+       WORKBOOK_VALUES_CATEGORY),
+)
+WORKBOOK_CAMMINI_COLUMNS = (
+    _COL_CODICE_CAMMINO, _COL_CAMMINO,
+    _C("alias", "Altri nomi", 30, "Altri nomi con cui lo stesso cammino è pubblicato (in un altro catalogo o in un'altra scheda).",
+       "Più nomi separati da punto e virgola.", "testo", multi=True, wrap=True),
+    _C("fonti", "Catalogo di provenienza", 22, "Cataloghi che pubblicano il cammino.",
+       "Cammini d'Italia: camminiditalia.org; MiTur: Catalogo dei Cammini religiosi del Ministero del Turismo. "
+       "Un cammino presente in entrambi è una riga sola.", WORKBOOK_VALUES_CATEGORY),
+    _C("scheda_cdi", "Scheda Cammini d'Italia", 40, "Pagina del cammino su camminiditalia.org.",
+       "Più schede dello stesso catalogo: un indirizzo per riga, il collegamento è sul primo.",
+       "indirizzo web", wrap=True, link=True),
+    _C("scheda_mitur", "Scheda MiTur", 40,
+       "Pagina del Catalogo dei Cammini religiosi del Ministero del Turismo che contiene la scheda del cammino.",
+       "Le schede MiTur non hanno una pagina propria: si apre la pagina dell'elenco in cui compare la scheda. "
+       "Più schede: un indirizzo per riga, il collegamento è sul primo.", "indirizzo web", wrap=True, link=True),
+    _COL_MEZZO, _COL_RELIGIOSO,
+    _C("evidenza_religioso", "Perché religioso", 40, "Da che cosa risulta il carattere religioso.",
+       "Per i cammini non religiosi vale nessuna fonte.", "testi separati da punto e virgola", multi=True, wrap=True),
+    *_COLS_TAGS,
+    _C("data_catalogo", "Data della scheda", 12, "Data da cui il cammino è nel catalogo MiTur, come scritta nella scheda.",
+       "Vuota per i cammini senza scheda MiTur e per le schede MiTur che non riportano la data.", WORKBOOK_VALUES_DATE,
+       WORKBOOK_FMT_DATE),
+    _C("regioni", "Regioni", 28, "Regioni indicate dai cataloghi.", "Più regioni separate da punto e virgola.",
+       "nomi ISTAT separati da punto e virgola", multi=True, wrap=True),
+    _C("lunghezza_dichiarata_km", "Lunghezza dichiarata (km)", 12,
+       "Lunghezza pubblicata dal catalogo da cui viene il tracciato misurato.",
+       "Vuota quando nessun catalogo la pubblica.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_DECIMAL, "km"),
+    _C("lunghezza_tracciata_km", "Lunghezza del tracciato (km)", 12,
+       "Lunghezza del tracciato del cammino, contando una volta sola le parti ripetute.",
+       "Vuota quando il cammino non ha tracciato.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_DECIMAL, "km"),
+    _C("copertura", "Copertura del tracciato", 12, "Quota della lunghezza dichiarata coperta dal tracciato, al massimo 100%.",
+       "Vuota quando manca una delle due lunghezze; sotto il 100% il tracciato pubblicato è incompleto.",
+       WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_SHARE),
+    _COL_FONTE_TRACCIATO,
+    _C("n_comuni", "N. comuni", 10, "Comuni attraversati dal cammino.",
+       f"È la somma di di cui dentro e di cui solo entro {_D} m.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT, "comuni"),
+    _C("n_dentro", "di cui dentro", 10, "Comuni in cui il tracciato tocca o entra.", "Compresi in N. comuni.",
+       WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT, "comuni"),
+    _C("n_vicino", f"di cui solo entro {_D} m", 11,
+       f"Comuni in cui il tracciato non entra ma passa a non più di {_D} m dal confine.", "Compresi in N. comuni.",
+       WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT, "comuni"),
+    _C("nota", "Nota", 50, "Osservazioni sul cammino: possibili duplicati da verificare, tracciato mancante.",
+       "Vuota quando non c'è nulla da segnalare.", "testo", wrap=True),
+    _C("comune_{k}", "Comune {k}", 26, "k-esimo comune nell'ordine del percorso, con la sigla della provincia.",
+       f"Dalla partenza all'arrivo; per i cammini con più rami un ramo dopo l'altro. La dicitura entro {_D} m indica un "
+       f"comune in cui il tracciato non entra. {_ORDINE_REGOLA}", f"Nome (SIGLA) oppure Nome (SIGLA, entro {_D} m)"),
+)
+WORKBOOK_COPPIE_COLUMNS = (
+    _COL_CODICE_CAMMINO, _COL_CAMMINO, _COL_PRO_COM, _COL_COMUNE, _COL_SIGLA, _COL_COD_UTS, _COL_PROVINCIA,
+    _COL_COD_REG, _COL_REGIONE,
+    _C("ordine", "Ordine lungo il cammino", 10, "Posizione del comune lungo il percorso del cammino, a partire da 1.",
+       _ORDINE_REGOLA, WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT),
+    _COL_PASSAGGIO,
+    _C("distanza_m", "Distanza dal confine (m)", 11, "Distanza minima del tracciato dal confine del comune.",
+       "0 quando il tracciato tocca o entra nel comune.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_DECIMAL, "m"),
+    replace(
+        _COL_MEZZO, contains="Come sono pubblicati i tracciati del cammino vicini al comune.",
+        reading=f"Contano i soli tracciati entro {_D} m dal comune.",
+    ),
+    replace(
+        _COL_FONTE_TRACCIATO, contains=f"Fonti dei tracciati del cammino che passano entro {_D} m dal comune.",
+        reading="Vedi Fonte del tracciato nel foglio Cammini.",
+    ),
+    _COL_RELIGIOSO, *_COLS_TAGS,
+)
+# Cammini per attributo: una tabella per caratteristica di WORKBOOK_DIMENSIONS (valori del cammino intero)
+WORKBOOK_SUMMARY_MULTI_NOTE = "Un cammino con più valori conta sotto ciascuno: le quote non sommano al 100%."
+WORKBOOK_SUMMARY_CROSS_TITLE = "Religioso per mezzo (numero di cammini)"
+_AVG = "Media sui cammini con il valore della riga"
+WORKBOOK_SUMMARY_COLUMNS = (
+    _C("valore", "Valore", 34, "Valore della caratteristica indicata nel titolo della tabella.",
+       f"Le etichette sono quelle del foglio Cammini; la riga {WORKBOOK_TOTAL_LABEL} conta l'insieme dei cammini.",
+       "valori del foglio Cammini", wrap=True),
+    _C("n_cammini", "N. cammini", 12, "Cammini con il valore della riga.", "Ogni cammino conta una volta per tabella, "
+       "salvo Tema e Stagione.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT, "cammini"),
+    _C("quota", "Incidenza sul totale", 12, "N. cammini diviso per il numero totale dei cammini.",
+       "In Tema e Stagione le quote non sommano al 100%.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_SHARE),
+    _C("media_dichiarata", "Lunghezza media dichiarata (km)", 14, "Media della Lunghezza dichiarata (km).",
+       f"{_AVG} e una lunghezza dichiarata.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_DECIMAL, "km"),
+    _C("media_tracciata", "Lunghezza media del tracciato (km)", 14, "Media della Lunghezza del tracciato (km).",
+       f"{_AVG} e un tracciato.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_DECIMAL, "km"),
+    _C("media_comuni", "N. medio di comuni", 12, "Media di N. comuni.", f"{_AVG}, compresi quelli senza comuni.",
+       WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_DECIMAL, "comuni"),
+    _C("comuni_distinti", "Comuni distinti attraversati", 14, "Comuni attraversati da almeno uno dei cammini della riga.",
+       "Un comune attraversato da più cammini della riga conta una volta.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT, "comuni"),
+)
+_CROSS = "Cammini con il carattere religioso della riga e il mezzo della colonna."
+WORKBOOK_SUMMARY_CROSS_COLUMNS = (
+    _C("x_religioso", "Religioso", 34, "Valore di Religioso (righe della tabella Religioso per mezzo).",
+       f"La riga {WORKBOOK_TOTAL_LABEL} somma le colonne.", WORKBOOK_VALUES_CATEGORY),
+    *(_C(WORKBOOK_CROSS_MODE_KEY.format(mode=mode), label, 12, _CROSS, "Vedi Mezzo nel foglio Cammini.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT, "cammini")
+      for mode, label in WORKBOOK_CROSS_MODE_LABELS.items()),
+    _C("x_totale", WORKBOOK_TOTAL_LABEL, 12, "Cammini con il carattere religioso della riga.", "Somma delle colonne del mezzo.",
+       WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT, "cammini"),
+)
+# Fogli per territorio: Italia, poi ogni regione seguita dalle sue province, ogni provincia dai suoi comuni attraversati
+WORKBOOK_TERRITORI_NOTES = (
+    "Una riga per territorio: Italia, regioni, province e comuni attraversati (con + e - a sinistra si aprono e chiudono "
+    "province e comuni).",
+    "Un cammino che tocca più territori conta in ciascuno: le righe non sommano alla riga del territorio superiore.",
+)
+WORKBOOK_PIVOT_NOTES = (
+    "N. cammini: cammini che toccano il territorio e hanno il valore scritto sopra la coppia di colonne; "
+    "Incidenza: N. cammini diviso per i Cammini della riga.",
+    "Un cammino che tocca più territori conta in ciascuno: le righe non sommano alla riga del territorio superiore.",
+)
+WORKBOOK_PIVOT_NOTE_TERRITORIAL = "Il valore è quello dei soli tracciati del cammino che passano per il territorio."
+WORKBOOK_PIVOT_NOTE_MULTI = "Un cammino con più valori conta sotto ciascuno: le Incidenze possono sommare oltre il 100%."
+_COL_LIVELLO = _C("livello", "Livello", 11, "Livello del territorio della riga.",
+                  "Si filtra per vedere un solo livello; le righe dei livelli inferiori sono raggruppate sotto il superiore.",
+                  WORKBOOK_VALUES_CATEGORY)
+_COL_CODICE = _C("codice", "Codice", 9, "Codice ISTAT del territorio.", "Testo, non numero; vuoto per l'Italia.",
+                 "2 cifre per la regione, 3 per la provincia, 6 per il comune", WORKBOOK_FMT_TEXT)
+_COL_TERRITORIO = _C("territorio", "Territorio", 34, "Nome ISTAT del territorio, rientrato secondo il livello.",
+                     "Le province seguono la loro regione, i comuni la loro provincia.", _NAME_ISTAT)
+_COL_TERRITORY_CAMMINI = _C("cammini", "Cammini", 11, "Cammini che toccano il territorio.",
+                            f"Un cammino tocca il territorio se attraversa almeno uno dei suoi comuni (entro {_D} m); "
+                            "conta una volta anche se ne attraversa molti.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT, "cammini")
+_COL_TERRITORY_CROSSED = _C("comuni_attraversati", "Comuni attraversati", 12,
+                            "Comuni del territorio attraversati da almeno un cammino.",
+                            "Sono le righe del foglio Comuni di quel territorio.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT, "comuni")
+WORKBOOK_TERRITORI_COLUMNS = (
+    _COL_LIVELLO, _COL_CODICE, _COL_TERRITORIO,
+    _C("comuni_territorio", "Comuni del territorio", 12, "Comuni ISTAT del territorio.",
+       "Confini ISTAT dell'anno di elaborazione; 1 nelle righe dei comuni.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT, "comuni"),
+    _COL_TERRITORY_CROSSED,
+    _C("quota_attraversati", "% comuni attraversati", 12, "Comuni attraversati diviso per i Comuni del territorio.",
+       "100% nelle righe dei comuni.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_SHARE),
+    _COL_TERRITORY_CAMMINI,
+    _C("media_cammini", "Media cammini per comune attraversato", 14,
+       "Media di N. cammini del foglio Comuni sui comuni attraversati del territorio.",
+       "I comuni non attraversati non entrano nella media; nelle righe dei comuni è il numero dei suoi cammini.",
+       WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_DECIMAL, "cammini"),
+)
+WORKBOOK_PIVOT_COLUMNS = (
+    _COL_LIVELLO, _COL_CODICE, _COL_TERRITORIO,
+    _C(WORKBOOK_PIVOT_N_KEY, "N. cammini", 10, "Cammini che toccano il territorio e hanno il valore scritto sopra la coppia.",
+       "Mezzo e Fonte: valore dei soli tracciati del cammino nel territorio; Tema e Stagione: un cammino conta sotto ogni "
+       "suo valore. Negli altri fogli i valori di una riga sommano ai Cammini.", WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_COUNT,
+       "cammini"),
+    _C(WORKBOOK_PIVOT_SHARE_KEY, "Incidenza", 10, "N. cammini diviso per i Cammini della riga.",
+       "Vuota quando il territorio non ha cammini; oltre il 100% in somma solo per Tema e Stagione.",
+       WORKBOOK_VALUES_NUMBER, WORKBOOK_FMT_SHARE),
+    replace(_COL_TERRITORY_CAMMINI, band=WORKBOOK_TOTAL_LABEL),
+    replace(_COL_TERRITORY_CROSSED, band=WORKBOOK_TOTAL_LABEL),
 )
 
-# --- Numeri del rapporto (report_numbers.py) ---
-# Ogni numero citato dal rapporto metodologico e' una riga di REPORT_NUMBERS_FILE, calcolata dai dati gia' prodotti dalla
-# catena (mai rilanciando un passo). Valori ASCII negli id; descrizioni in italiano; quote e recall sempre in percentuale
-REPORT_NUMBERS_FILE = WORKBOOK_OUTPUT_DIR / "numeri_rapporto.csv"
-REPORT_NUMBERS_FIELDS = ("id", "sezione", "descrizione", "valore", "unita", "fonte")
-REPORT_SEZIONI = (
-    "fonti", "tracciati", "calibrazione", "deduplicazione", "osm", "etichette", "comuni", "ordine", "cartella",
+# Legenda: scopo, fonti, dizionario delle colonne
+WORKBOOK_LEGENDA_SCOPE_TITLE = "Scopo"
+WORKBOOK_LEGENDA_SCOPE = (
+    "Il file risponde a due domande: quali cammini attraversano ogni comune italiano e quali comuni attraversa ogni cammino, "
+    "nell'ordine del percorso. "
+    f"Un cammino attraversa un comune quando il suo tracciato entra nel comune o passa a non più di {_D} m dal confine "
+    f"(confini ISTAT al 1 gennaio {ISTAT_EDITION_YEAR}); un cammino pubblicato da più cataloghi conta una volta. "
+    "Il metodo è descritto nella nota metodologica del repository, report/Cammini Comuni - Nota Metodologica.docx."
 )
-REPORT_ID_PATTERN = r"[a-z][a-z0-9_]*"
-REPORT_EMPTY_SLUG = "vuoto"  # valore mancante usato come parte di un id
-REPORT_PERCENT_DECIMALS = 2
-REPORT_VALUE_DECIMALS = 4  # numeri non percentuali (m, km, punteggi)
-REPORT_BYTES_PER_MB = 1024**2
-REPORT_SOURCE_NOTE_SEPARATOR = "; "  # tra il file e il filtro nella colonna fonte
-REPORT_DATA_PREFIX = "data/"  # i percorsi nella colonna fonte partono da qui
-# Percentili di una distribuzione: nome nell'id -> quantile
-REPORT_QUANTILES = {"mediana": 0.5, "p90": 0.9}
-# Fonti: registro delle richieste e scheda MiTur
-REPORT_LOG_DATE_CHARS = 10  # AAAA-MM-GG, i primi caratteri di utc_iso
-REPORT_MITUR_FORMAT_SEPARATOR = ":"  # "gpx:33|kml:2" in mitur_cammini.csv: formato e numero di file
-REPORT_CDI_TIPOLOGIE = ("lineare", "anello")
-# Calibrazione: colonne di sintesi.csv riportate per ogni d (colonna, parte dell'id, descrizione con {d}, unita', fattore).
-# Le quote (fattore 100) escono in percentuale
-REPORT_CALIBRATION_COLUMNS = (
-    ("A_recall_cammino", "a_recall_cammino", "Calibrazione A: estremi di tappa pubblicati ritrovati entro {d} m dalla linea del cammino", "%", 100),
-    ("A_recall_tratta", "a_recall_tratta", "Calibrazione A: estremi di tappa pubblicati ritrovati entro {d} m dalla linea della tratta", "%", 100),
-    ("C_recall", "c_recall", "Calibrazione C: comuni dell'altra fonte ritrovati a d = {d} m (coppie cdi-MiTur con lunghezze simili)", "%", 100),
-    ("C_extra_tot", "c_extra", "Calibrazione C: comuni in piu' rispetto all'altra fonte a d = {d} m (coppie con lunghezze simili)", "comuni", 1),
-    ("C_tutte_recall", "c_tutte_recall", "Calibrazione C: comuni dell'altra fonte ritrovati a d = {d} m (tutte le coppie cdi-MiTur)", "%", 100),
-    ("C_tutte_extra_tot", "c_tutte_extra", "Calibrazione C: comuni in piu' rispetto all'altra fonte a d = {d} m (tutte le coppie cdi-MiTur)", "comuni", 1),
-    ("D_coppie_totali", "d_coppie", "Coppie cammino-comune dei cammini del catalogo con tracce a d = {d} m", "coppie", 1),
-    ("D_coppie_cdi", "d_coppie_cdi", "Coppie cammino-comune dei cammini cdi a d = {d} m", "coppie", 1),
-    ("D_coppie_mitur", "d_coppie_mitur", "Coppie cammino-comune dei cammini MiTur a d = {d} m", "coppie", 1),
-    ("D_comuni_per_cammino_cdi", "d_comuni_per_cammino_cdi", "Comuni per cammino cdi (media) a d = {d} m", "comuni", 1),
-    ("D_comuni_per_cammino_mitur", "d_comuni_per_cammino_mitur", "Comuni per cammino MiTur (media) a d = {d} m", "comuni", 1),
-    ("D_aumento_vs_0", "d_aumento", "Coppie cammino-comune in piu' a d = {d} m rispetto a d = 0", "coppie", 1),
-    ("D_aumento_vs_0_pct", "d_aumento_pct", "Coppie cammino-comune in piu' a d = {d} m rispetto a d = 0, in percentuale", "%", 1),
+WORKBOOK_LEGENDA_SOURCES_TITLE = "Fonti"
+WORKBOOK_LEGENDA_SOURCES_HEADERS = ("Fonte", "Che cosa fornisce", "Data di scaricamento", "Licenza e condizioni")
+# (fonte, che cosa fornisce, host del registro delle richieste, licenza)
+WORKBOOK_LEGENDA_SOURCES = (
+    ("Cammini d'Italia", "Elenco dei cammini con scheda tecnica e tappe (camminiditalia.org) e tracce GPS delle tappe "
+     "(app Cammini d'Italia, Webmapp).", (HOST_CDI, HOST_MAPHUB, HOST_S3),
+     "Dati di Cammini d'Italia S.R.L., usati in base al contratto «Commercial Data License Agreement and API access term» "
+     "stipulato con Nomisma: Nomisma può condividerli con i propri partner, che non possono ridistribuirli."),
+    ("MiTur (Catalogo dei Cammini religiosi)", "Schede dei cammini religiosi del Ministero del Turismo e tracce GPS dei file "
+     "scaricabili.", (HOST_MITUR,), "Licenza CC BY 3.0 salvo diversa indicazione (Note legali del portale: "
+     "https://www.ministeroturismo.gov.it/note-legali/); fonte: Ministero del Turismo."),
+    ("OpenStreetMap", "Relazioni di percorso dell'estratto Italia di Geofabrik, usate per abbinare i cammini e come tracciato "
+     "dei cammini senza tracce.", (HOST_GEOFABRIK,),
+     "© OpenStreetMap contributors, ODbL (https://www.openstreetmap.org/copyright)."),
+    ("ISTAT confini comunali", f"Confini non generalizzati di comuni, province e regioni al 1 gennaio {ISTAT_EDITION_YEAR}.",
+     (HOST_ISTAT,), "Licenza CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/), fonte: ISTAT."),
 )
-# Esperimento B: colonne per metodo di degradazione (sintesi.csv: B_<metodo>_<misura>). Il caso peggiore su tutti i
-# metodi esce per ogni d; il dettaglio per metodo solo a d scelta
-REPORT_CALIBRATION_B_MEASURES = (
-    ("recall", "recall", "min", "Recall sui comuni di riferimento", "%", 100),
-    ("recall_marginale", "recall_marginale", "min", "Recall sui comuni a rischio (traccia dentro per meno di 200 m)", "%", 100),
-    ("extra_tot", "extra", "max", "Comuni in piu' rispetto al riferimento", "comuni", 1),
-)
-REPORT_CALIBRATION_B_METHOD_TEXT = {
-    DEGRADE_SUBSAMPLE_PREFIX: "un vertice ogni {n} m",
-    DEGRADE_SIMPLIFY_PREFIX: "semplificazione con tolleranza {n} m",
-    DEGRADE_JITTER_PREFIX: "errore laterale casuale con sigma {n} m",
-    DEGRADE_SHIFT_PREFIX: "traslazione laterale di {n} m (lato peggiore)",
-}
-# Deduplicazione: id breve della diagnosi dei quasi duplicati
-REPORT_DEDUP_DIAGNOSI_IDS = {
-    DIAGNOSI_SFASAMENTO: "sfasamento", DIAGNOSI_VARIANTE: "variante", DIAGNOSI_MANCANTI: "mancanti", DIAGNOSI_VERSIONE: "versione",
-}
-REPORT_DEDUP_CLASSES = (CLASSE_DUPLICATO, CLASSE_SEZIONE, CLASSE_LIMBO, CLASSE_DISTINTO)
-# Abbinamento con OSM: esiti in ordine di lettura
-REPORT_OSM_ESITI = (
-    ESITO_ABBINATO, ESITO_AMBIGUO, ESITO_SOLO_GEOMETRIA, ESITO_NESSUNO, ESITO_PARZIALE, ESITO_CONTENITORE,
-)
-REPORT_OSM_PILGRIMAGE_VALUES = ("si", "no", OSM_MATCH_PILGRIMAGE_SILENT)
-REPORT_OSM_TAG_YES = "yes"  # pilgrimage=yes in cammini_osm.csv; no = valori negativi di tags.py
-# Etichette: da che cosa risulta il carattere religioso (id, descrizione); la classificazione e' in report_numbers.py
-REPORT_EVIDENCE_KINDS = (
-    ("catalogo", "nel Catalogo dei cammini religiosi del Ministero del Turismo"),
-    ("tema_cdi", "con tema spirituale su camminiditalia.org"),
-    ("tema_mappa", "con tema spirituale sulla mappa Cammini d'Italia"),
-    ("pellegrinaggio_osm", "indicati come pellegrinaggio in OpenStreetMap"),
-    ("nome", "con una parola religiosa nel nome"),
-)
-REPORT_TAG_MULTI_FIELDS = ("tipologia", "portata")  # campi multivalore elencati per valore
-REPORT_TAG_FLAG_FIELDS = ("credenziale", "segnaletica")  # campi si/no: cammini con almeno un si
-# Comuni
-REPORT_TOP_COMUNI = 10
-REPORT_COPERTURA_BANDS = (0.5, 0.8)  # sotto la prima, tra le due, dalla seconda in su; vuota a parte
-REPORT_NOTA_KINDS = (("possibile_duplicato", "possibile duplicato"), ("nessuna_geometria", "nessuna geometria"))
-# Ordine: salto tra comuni consecutivi (distanza tra i centroidi) oltre cui il passaggio a un altro ramo e' sospetto
-REPORT_JUMP_THRESHOLDS_KM = (30, 60, 100)
-REPORT_ENDPOINT_TIPOLOGIA = "lineare"
-# Cartella di lavoro
-REPORT_WORKBOOK_GLOB = WORKBOOK_FILE_TEMPLATE.format(data="*")
-REPORT_WORKBOOK_DATE_PATTERN = r"(\d{4}-\d{2}-\d{2})\.xlsx$"
-REPORT_WORKBOOK_DATA_SHEETS = (WORKBOOK_SHEET_COMUNI, WORKBOOK_SHEET_CAMMINI, WORKBOOK_SHEET_COPPIE)  # una riga di intestazione
-# Calibrazione: colonne di sintesi.csv che non dipendono da d (colonna, id, descrizione, unita', fattore)
-REPORT_CALIBRATION_FIXED = (
-    ("A_n_coppie_cammino", "calib_a_coppie_cammino", "Calibrazione A: coppie (cammino, luogo) misurate sulla linea del cammino", "coppie", 1),
-    ("A_n_coppie_tratta", "calib_a_coppie_tratta", "Calibrazione A: coppie (tratta, luogo) misurate sulla linea della tratta", "coppie", 1),
-    ("A_n_senza_linea_coppie", "calib_a_senza_linea_coppie", "Calibrazione A: coppie escluse perche' il cammino non ha una linea", "coppie", 1),
-    ("A_n_senza_linea_cammini", "calib_a_senza_linea_cammini", "Calibrazione A: cammini senza una linea", "cammini", 1),
-    ("B_n_tratte", "calib_b_tratte", "Calibrazione B: tratte a tappa dense usate come riferimento", "tratte", 1),
-    ("B_n_cammini", "calib_b_cammini", "Calibrazione B: cammini con tracce dense", "cammini", 1),
-    ("B_n_riferimento", "calib_b_riferimento", "Calibrazione B: coppie (cammino, comune) di riferimento, dove la traccia densa entra nel comune", "coppie", 1),
-    ("B_n_marginali", "calib_b_marginali", "Calibrazione B: coppie a rischio, dove la traccia densa sta dentro il comune per meno di 200 m", "coppie", 1),
-    ("C_n_gruppi", "calib_c_gruppi_lunghezza_simile", "Calibrazione C: coppie cdi-MiTur dello stesso cammino con lunghezze simili", "coppie", 1),
-    ("C_densa_n_gruppi", "calib_c_gruppi_densi", "Calibrazione C: coppie cdi-MiTur con lunghezze simili e traccia MiTur densa", "coppie", 1),
-    ("C_tutte_n_gruppi", "calib_c_gruppi_tutti", "Calibrazione C: coppie cdi-MiTur dello stesso cammino, di qualunque lunghezza", "coppie", 1),
-    ("D_n_cammini", "calib_d_cammini", "Calibrazione D: cammini del catalogo con tracce misurati", "cammini", 1),
-)
-# Calibrazione A, distribuzione della distanza dei luoghi pubblicati dalla linea (A_distribuzione.csv, una riga per ambito)
-REPORT_CALIBRATION_DISTRIBUTION = (
-    ("n_misurate", "n_misurate", "coppie (luogo, {ambito}) misurate", "coppie", 1),
-    ("quota_a_0", "quota_a_0", "quota di luoghi pubblicati a distanza 0 dalla linea del {ambito}", "%", 100),
-    ("p50", "p50_m", "distanza mediana dei luoghi pubblicati dalla linea del {ambito}", "m", 1),
-    ("p90", "p90_m", "90o percentile della distanza dei luoghi pubblicati dalla linea del {ambito}", "m", 1),
-    ("p95", "p95_m", "95o percentile della distanza dei luoghi pubblicati dalla linea del {ambito}", "m", 1),
-    ("p99", "p99_m", "99o percentile della distanza dei luoghi pubblicati dalla linea del {ambito}", "m", 1),
-    ("max", "max_m", "distanza massima di un luogo pubblicato dalla linea del {ambito}", "m", 1),
-)
-# Calibrazione A, esiti del confronto dei nomi dei luoghi con i comuni ISTAT (riga origine "tutte", ruolo "tutti")
-REPORT_CALIBRATION_MATCH_ROW = ("tutte", "tutti")
-REPORT_CALIBRATION_MATCH_COLUMNS = ("ok", "omonimo", "due luoghi", "nome_parziale", "non_trovato", "vuoto", "n_nomi")
-# Lunghezza del tracciato su lunghezza dichiarata (cammini.csv, prima del tetto a 1 della copertura): soglie contate
-REPORT_LENGTH_RATIO_THRESHOLDS = (1.0, 1.1, 1.5)
-REPORT_OSM_NETWORKS = ("lwn", "rwn", "nwn", "iwn")  # reti di percorsi a piedi di OSM: locale, regionale, nazionale, internazionale
+WORKBOOK_LEGENDA_COLUMNS_TITLE = "Colonne"
+WORKBOOK_LEGENDA_HEADERS = ("Colonna", "Che cosa contiene", "Valori", "Come leggerla")
+WORKBOOK_LEGENDA_WIDTHS = (34, 60, 45, 70)  # colonne B..E
+WORKBOOK_LEGENDA_SEPARATOR = "{sheet}: {description}"

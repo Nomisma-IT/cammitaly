@@ -39,9 +39,12 @@ def join_values(values: Iterable[str]) -> str:
 
 
 def combine_mezzo(modes: Iterable[str]) -> str:
-    """{piedi} -> piedi, {bici} -> bici, ogni altro insieme -> entrambi. Nessuna tratta: il default e' piedi."""
-    found = set(modes)
-    if found <= {config.MEZZO_PIEDI}:
+    """{piedi} -> piedi, {bici} -> bici, ogni altro insieme -> entrambi. I vuoti non contano; nessun mezzo (un cammino
+    senza tracce) resta vuoto: nessun dato dice come si percorre, quindi non si assume "a piedi"."""
+    found = {mode for mode in modes if mode != config.MEZZO_NESSUNO}
+    if not found:
+        return config.MEZZO_NESSUNO
+    if found == {config.MEZZO_PIEDI}:
         return config.MEZZO_PIEDI
     return config.MEZZO_BICI if found == {config.MEZZO_BICI} else config.MEZZO_ENTRAMBI
 
@@ -338,7 +341,7 @@ def label_cammini(tratte: list[dict[str, str]], osm: list[dict[str, str]]) -> li
     modes: dict[str, set[str]] = {}
     for row in tratte:
         modes.setdefault(row["cammino_id"], set()).add(row["mezzo"])
-    # Un cammino senza tratte (nel limbo) prende il mezzo di un insieme vuoto, cioe' il default
+    # Un cammino senza tratte (nel limbo) prende il mezzo di un insieme vuoto, cioe' nessun mezzo
     mezzi: defaultdict[str, str] = defaultdict(lambda: combine_mezzo(()))
     mezzi.update({cid: combine_mezzo(found) for cid, found in modes.items()})
     return _cdi_cammini(mezzi) + _mitur_cammini(mezzi) + _osm_cammini(mezzi, osm)

@@ -10,8 +10,8 @@ Si confrontano tutte le coppie, anche dentro la stessa fonte. Le uscite sono in 
 cammini o le tratte.
 
 cammini_unici.csv e membri.csv: componenti connesse delle coppie duplicato e sezione, l'unica fonte dei gruppi; un
-cammino unito tiene tutte le tracce delle sue versioni. Non c'e' un file di geometrie: chi serve le tratte (tag, passo
-P5) le raccoglie per cammino_id dei membri, con le loro etichette.
+cammino unito tiene tutte le tracce delle sue versioni. Non c'e' un file di geometrie: chi serve le tratte (tag, calcolo
+delle coppie cammino-comune) le raccoglie per cammino_id dei membri, con le loro etichette.
 """
 import itertools
 from collections import defaultdict

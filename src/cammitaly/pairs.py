@@ -81,7 +81,10 @@ def load_tracks(catalogue_ids: Iterable[str]) -> gpd.GeoDataFrame:
 def _standin_mezzo(tratta_id: str, by_relation: Mapping[str, Sequence[str]]) -> str | None:
     """Mezzo del sostituto OSM: l'id e' fatto delle relazioni abbinate unite da '|', se ne combinano i mezzi."""
     modes = [mode for relation in tratta_id.split(config.LIST_SEPARATOR) for mode in by_relation.get(relation, [])]
-    return tags.combine_mezzo(modes) if modes else None
+    mezzo = tags.combine_mezzo(modes) if modes else None
+    if not mezzo:
+        raise PairsError(f"Sostituto OSM, relazione {tratta_id}: mezzo vuoto, rilanciare tag")
+    return mezzo
 
 
 def track_mezzi(tracks: pd.DataFrame, labels: pd.DataFrame) -> list[str]:
@@ -176,18 +179,31 @@ def cross_tracks(tracks: gpd.GeoDataFrame, comuni: gpd.GeoDataFrame) -> pd.DataF
     return found.rename(columns={"cammino_id": "traccia"})
 
 
+def track_source(tratta_id: str) -> str:
+    """Fonte di una traccia dal prefisso del suo id ("cdi:...", "mitur:...", "osm:r..." anche per il sostituto OSM)."""
+    source = tratta_id.split(config.ID_SEPARATOR, 1)[0]
+    if source not in config.FONTI_GEOMETRIA:
+        raise PairsError(f"traccia {tratta_id!r}: fonte non riconosciuta dal prefisso dell'id")
+    return source
+
+
 def aggregate_pairs(found: pd.DataFrame, tracks: pd.DataFrame, membri: pd.DataFrame) -> pd.DataFrame:
-    """Una riga per (cammino distinto, comune): distanza minima, dentro se una traccia entra, mezzo combinato."""
+    """Una riga per (cammino distinto, comune): distanza minima, dentro se una traccia entra, mezzo combinato, fonti
+    delle tracce entro d da quel comune."""
     repeated = membri.loc[membri["cammino_id"].duplicated(), "cammino_id"]
     if not repeated.empty:
         raise PairsError(f"membri.csv: il cammino {repeated.iloc[0]} e' membro di piu' cammini distinti: rilanciare dedup")
     unico_of = membri.set_index("cammino_id")[UNICO]
-    rows = found.join(tracks[["cammino_id", "mezzo"]], on="traccia")
+    rows = found.join(tracks[["cammino_id", "mezzo", "tratta_id"]], on="traccia")
+    rows["fonte_geometria"] = rows["tratta_id"].map(track_source)
     rows[UNICO] = rows["cammino_id"].map(unico_of)
     if rows[UNICO].isna().any():
         raise PairsError("tracce di cammini che non sono membri di nessun cammino distinto: rilanciare dedup")
     grouped = rows.groupby([UNICO, COMUNE], sort=False)
-    pairs = grouped.agg(distanza_m=("distanza_m", "min"), dentro=("dentro", "any"), mezzo=("mezzo", tags.combine_mezzo))
+    pairs = grouped.agg(
+        distanza_m=("distanza_m", "min"), dentro=("dentro", "any"), mezzo=("mezzo", tags.combine_mezzo),
+        fonte_geometria=("fonte_geometria", tags.join_values),
+    )
     return pairs.reset_index()
 
 
@@ -645,26 +661,19 @@ def length_columns(members: Sequence[str], catalogue: pd.DataFrame, rows: TrackR
     return {"dichiarata": declared[best], "tracciata": traced[best], "copertura": min(ratios[best], 1.0)}
 
 
-def geometry_source(members: Sequence[str], rows: TrackRows) -> str:
-    """catalogo, osm (solo il sostituto di un membro senza tracce), catalogo e osm (tracce di catalogo di un membro e
-    sostituto OSM di un altro), nessuna."""
-    fonti = {fonte for member in members if member in rows for fonte in rows[member]["fonte"]}
-    own, standin = bool(fonti - {config.OSM_FONTE}), config.OSM_FONTE in fonti
-    return {
-        (True, False): config.FONTE_GEOMETRIA_CATALOGO, (False, True): config.FONTE_GEOMETRIA_OSM,
-        (True, True): config.FONTE_GEOMETRIA_CATALOGO_OSM, (False, False): config.FONTE_GEOMETRIA_NESSUNA,
-    }[(own, standin)]
-
-
 def geometry_columns(members: Sequence[str], catalogue: pd.DataFrame, rows: TrackRows) -> dict[str, object]:
-    """Lunghezze, copertura e provenienza della geometria di un cammino distinto."""
+    """Lunghezze e copertura della geometria di un cammino distinto."""
     lengths = length_columns(members, catalogue, rows)
     return {
         "lunghezza_dichiarata_km": lengths["dichiarata"],
         "lunghezza_tracciata_km": round(lengths["tracciata"], config.PAIRS_LUNGHEZZA_DECIMALS),
         "copertura": round(lengths["copertura"], config.PAIRS_COPERTURA_DECIMALS),
-        "fonte_geometria": geometry_source(members, rows),
     }
+
+
+def pair_sources(pairs: pd.DataFrame) -> dict[str, str]:
+    """Cammino distinto -> unione delle fonti delle tracce delle sue coppie (i cammini senza coppie non compaiono)."""
+    return pairs.groupby(UNICO)["fonte_geometria"].agg(tags.combine_multi).to_dict()
 
 
 def _limbo_pair(oggetto: str, unico_of: pd.Series) -> tuple[str, str]:
@@ -697,13 +706,15 @@ def limbo_notes(inputs: Inputs) -> dict[str, list[str]]:
     return notes
 
 
-def nota(limbo: Sequence[str], source: object) -> str:
-    notes = [*limbo, *([config.PAIRS_NOTA_NESSUNA_GEOMETRIA] if source == config.FONTE_GEOMETRIA_NESSUNA else [])]
+def nota(limbo: Sequence[str], has_tracks: bool) -> str:
+    notes = [*limbo, *([] if has_tracks else [config.PAIRS_NOTA_NESSUNA_GEOMETRIA])]
     return config.PAIRS_NOTA_SEPARATOR.join(dict.fromkeys(notes))
 
 
-def build_cammini(inputs: Inputs, n_comuni: Mapping[str, int], names: Mapping[str, str]) -> pd.DataFrame:
-    """Una riga per ogni cammino distinto di cammini_unici.csv, anche con zero comuni."""
+def build_cammini(
+    inputs: Inputs, n_comuni: Mapping[str, int], names: Mapping[str, str], sources: Mapping[str, str],
+) -> pd.DataFrame:
+    """Una riga per ogni cammino distinto di cammini_unici.csv, anche con zero comuni. sources: pair_sources."""
     rows, counted, limbo = inputs.rows, osm_relations_counted(inputs.abbinamenti), limbo_notes(inputs)
     records = []
     for unico in inputs.unici.to_dict("records"):
@@ -715,15 +726,16 @@ def build_cammini(inputs: Inputs, n_comuni: Mapping[str, int], names: Mapping[st
             **label_columns(ids, inputs.labels, counted),
             "regioni": canonical_regions(inputs.catalogue.loc[ids, "regioni"], names),
             **geometry,
-            "nota": nota(limbo.get(unico[UNICO], []), geometry["fonte_geometria"]),
+            "fonte_geometria": sources.get(unico[UNICO], config.FONTE_GEOMETRIA_NESSUNA),
+            "nota": nota(limbo.get(unico[UNICO], []), any(member in rows for member in ids)),
             "n_comuni": n_comuni.get(unico[UNICO], 0),
         })
     return pd.DataFrame(records, columns=list(config.PAIRS_CAMMINI_FIELDS))
 
 
 def build_coppie(pairs: pd.DataFrame, cammini: pd.DataFrame, comune_table: pd.DataFrame) -> pd.DataFrame:
-    """Coppie con nomi dei comuni e le etichette del cammino (religioso, fonte della geometria), ordinate per percorso."""
-    per_cammino = cammini[[UNICO, "nome", "religioso", "fonte_geometria"]]
+    """Coppie con nomi dei comuni e le etichette del cammino (nome, religioso), ordinate per percorso."""
+    per_cammino = cammini[[UNICO, "nome", "religioso"]]
     coppie = pairs.merge(comune_table, on=COMUNE, how="left", validate="many_to_one")
     coppie = coppie.merge(per_cammino, on=UNICO, how="left", validate="many_to_one")
     return coppie.sort_values([UNICO, "ordine"], ignore_index=True)[list(config.PAIRS_COPPIE_FIELDS)]
@@ -753,7 +765,7 @@ def run() -> None:
     accepted, rejected = split_starts(inputs.membri, member_starts(comuni), comuni_of)
     anchors = chain_anchors(inputs.membri, inputs.rows, polygons, accepted, spines)
     pairs["ordine"] = route_order(pairs, spines, polygons, anchors)
-    cammini = build_cammini(inputs, pairs.groupby(UNICO).size().to_dict(), region_names(comune_table))
+    cammini = build_cammini(inputs, pairs.groupby(UNICO).size().to_dict(), region_names(comune_table), pair_sources(pairs))
     coppie = build_coppie(pairs, cammini, comune_table)
     common.write_frame(coppie, config.PAIRS_DIR / config.PAIRS_FILES["coppie"])
     common.write_frame(cammini, config.PAIRS_DIR / config.PAIRS_FILES["cammini"])

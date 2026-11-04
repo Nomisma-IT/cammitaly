@@ -44,7 +44,7 @@ Il nome del file deve iniziare con `p` e finire con `.html` (ad esempio `p01.htm
 .venv\Scripts\python.exe -m cammitaly all
 ```
 
-La cartella di lavoro viene scritta in `data/output/cammini_comuni_<data>.xlsx` (`<data>` = giorno di elaborazione, AAAA-MM-GG). Il comando si ferma al primo errore indicando il passo; dopo aver rimosso la causa basta rilanciarlo: i download già completati restano in `data/raw/` e non si ripetono.
+La cartella di lavoro viene scritta in `data/output/Cammini Comuni <data>.xlsx` (`<data>` = giorno di elaborazione, GG.MM.AAAA). Il comando si ferma al primo errore indicando il passo; dopo aver rimosso la causa basta rilanciarlo: i download già completati restano in `data/raw/` e non si ripetono.
 
 Tempi indicativi della prima esecuzione, circa due ore in tutto:
 
@@ -57,6 +57,18 @@ Tempi indicativi della prima esecuzione, circa due ore in tutto:
 | `osm-match` | circa 20 min |
 | `dedup` | 8-13 min |
 | tutti gli altri | pochi minuti ciascuno |
+
+Fogli della cartella di lavoro:
+
+| Foglio | Contenuto |
+|---|---|
+| Legenda | scopo, fonti con date di scaricamento e licenze, significato e valori di ogni colonna |
+| Comuni | una riga per comune attraversato, con i cammini che lo attraversano |
+| Cammini | una riga per cammino, con le caratteristiche e i comuni nell'ordine del percorso |
+| Territori | Italia, regioni, province e comuni attraversati, con comuni attraversati e numero di cammini; le righe si aprono e si chiudono con i segni + e - |
+| Territori x Religioso, Mezzo, Forma, Portata, Tema, Stagione, Segnaletica, Credenziale, Catalogo, Fonte | dieci fogli, uno per caratteristica: per ogni territorio, i cammini per valore della caratteristica |
+| Cammini per attributo | in Italia, numero di cammini e medie per valore di ogni caratteristica, e religioso per mezzo |
+| Coppie | una riga per coppia cammino e comune: la tabella da cui derivano gli altri fogli |
 
 ### 3. Passi singoli (rielaborazioni parziali)
 
@@ -76,7 +88,7 @@ Tempi indicativi della prima esecuzione, circa due ore in tutto:
 | `osm-match` | abbina i cammini del catalogo alle relazioni OSM | i tre `build`, `fetch istat` | `osm_match/` |
 | `dedup` | riconosce i cammini presenti in entrambe le fonti | `build cdi`, `build mitur`, `osm-match` | `dedup/` |
 | `pairs` | comuni attraversati da ogni cammino distinto, in ordine di percorso | `tag`, `osm-match`, `dedup`, `fetch istat` | `comuni/` |
-| `workbook` | scrive la cartella di lavoro Excel | `pairs`, `fetch istat` | `data/output/cammini_comuni_<data>.xlsx` |
+| `workbook` | scrive la cartella di lavoro Excel | `pairs`, `fetch istat` | `data/output/Cammini Comuni <data>.xlsx` |
 | `calibra` | verifica la distanza `d` sui dati (facoltativo, non fa parte di `all`) | `build cdi`, `build mitur`, `fetch istat` | `calibrazione/` |
 
 `fetch` accetta `--limit N` (webmapp: prime N tracce; mitur: primi N zip; osm: `0` = solo md5 e dimensione, senza pbf) e `--refresh` (ignora la cache e scarica di nuovo). Ogni richiesta resta registrata in `data/raw/requests_log.csv`; l'esecuzione si ferma al primo errore HTTP, reindirizzamento o timeout, senza nuovi tentativi.
@@ -113,11 +125,11 @@ Dopo aver cambiato un parametro si rilanciano il passo che lo usa e quelli succe
 |---|---|---|
 | camminiditalia.org | cammini con scheda tecnica e tappe | dati di Cammini d'Italia S.R.L., usati in base al contratto «Commercial Data License Agreement and API access term» con Nomisma: condivisibili con i partner di Nomisma, non ridistribuibili |
 | Webmapp (app Cammini d'Italia) | tracce GPS delle tappe | mappa CC BY-NC-SA; tracce di Cammini d'Italia S.R.L. con le stesse condizioni di camminiditalia.org |
-| Ministero del Turismo, Catalogo dei Cammini religiosi | schede e zip di tracce GPS | licenza non verificata; fonte: Ministero del Turismo |
+| Ministero del Turismo, Catalogo dei Cammini religiosi | schede e zip di tracce GPS | CC BY 3.0 salvo diversa indicazione ([Note legali del portale](https://www.ministeroturismo.gov.it/note-legali/)); fonte: Ministero del Turismo |
 | OpenStreetMap, estratto Geofabrik | relazioni di percorso | ODbL, © OpenStreetMap contributors |
 | ISTAT | confini amministrativi non generalizzati al 1 gennaio | CC BY 4.0, fonte: ISTAT |
 
-Regole e conteggi del metodo: `report/notes.md`.
+Come funziona il metodo: `report/Cammini Comuni - Nota Metodologica.docx`.
 
 ## Test
 

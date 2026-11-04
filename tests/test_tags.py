@@ -119,7 +119,8 @@ def test_osm_route_evidence_for_missing_and_unusual_routes() -> None:
 @pytest.mark.parametrize(
     ("modes", "expected"),
     [
-        ([], PIEDI), ([PIEDI, PIEDI], PIEDI), ([BICI], BICI), ([BICI, BICI], BICI),
+        ([], ""), ([""], ""), (["", ""], ""), (["", PIEDI], PIEDI), (["", BICI], BICI), (["", ENTRAMBI], ENTRAMBI),
+        ([PIEDI, PIEDI], PIEDI), ([BICI], BICI), ([BICI, BICI], BICI),
         ([PIEDI, BICI], ENTRAMBI), ([ENTRAMBI], ENTRAMBI), ([PIEDI, ENTRAMBI], ENTRAMBI), ([BICI, ENTRAMBI], ENTRAMBI),
     ],
 )
@@ -403,7 +404,7 @@ def test_cammino_mode_is_the_roll_up_of_its_tratte(monkeypatch: pytest.MonkeyPat
     ]
     rows = tags.label_cammini(tratte, osm)
     assert {row["cammino_id"]: row["mezzo"] for row in rows} == {
-        "osm:r1": PIEDI, "osm:r2": BICI, "osm:r3": ENTRAMBI, "osm:r4": PIEDI,  # r4 senza tratte: default piedi
+        "osm:r1": PIEDI, "osm:r2": BICI, "osm:r3": ENTRAMBI, "osm:r4": "",  # r4 senza tratte: nessun mezzo, non "piedi"
     }
 
 
