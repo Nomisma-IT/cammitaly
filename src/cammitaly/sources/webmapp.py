@@ -49,7 +49,9 @@ def run(limit: int | None = None, refresh: bool = False) -> None:
     listing_path = config.WEBMAPP_RAW_DIR / "listing.json"
     http.fetch(config.WEBMAPP_LISTING_URL, listing_path, config.HOST_MAPHUB, refresh)
     hits = json.loads(listing_path.read_text(encoding="utf-8"))["hits"]
-    _download_tracks(_track_ids(hits), limit, refresh)
+    track_ids = _track_ids(hits)
+    http.set_request_cap(config.HOST_S3, len(track_ids) + config.WEBMAPP_REQUEST_MARGIN)
+    _download_tracks(track_ids, limit, refresh)
     count = files.write_csv(config.WEBMAPP_TRACKS_CSV, TRACKS_FIELDS, map(_track_row, hits))
     with_geometry = sum(track_path(hit["id"]).exists() for hit in hits)
     print(f"webmapp: {count} tracce in elenco, {with_geometry} con geometria scaricata")

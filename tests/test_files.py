@@ -170,3 +170,9 @@ def test_flat_extraction_rejects_a_corrupt_nested_zip(tmp_path: Path) -> None:
     with pytest.raises(files.UnsafeArchiveError, match="non valido"):
         files.extract_flat_atomically(archive, tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+def test_write_csv_uses_lf_line_endings_and_creates_the_folder(tmp_path: Path) -> None:
+    path = tmp_path / "nuova" / "t.csv"
+    assert files.write_csv(path, ["a", "b"], [{"a": "1", "b": "x, y"}, {"a": "2", "b": "z"}]) == 2
+    assert path.read_bytes() == b'a,b\n1,"x, y"\n2,z\n'

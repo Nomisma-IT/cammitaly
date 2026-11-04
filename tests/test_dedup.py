@@ -1,4 +1,4 @@
-"""Deduplicazione: classi, gruppi, sensibilita', segmenti lontani e confronto dei comuni, su geometrie sintetiche."""
+"""Deduplicazione: classi, cammini unici, sensibilita', segmenti lontani e confronto dei comuni, su geometrie sintetiche."""
 from pathlib import Path
 
 import geopandas as gpd
@@ -33,7 +33,7 @@ def coppie_of(entries: list[tuple[str, str, str]], lines: dict) -> pd.DataFrame:
     return dedup.coppie_frame(pairs).set_index(["cammino_a", "cammino_b"])
 
 
-# --- classi D-2 ---
+# --- classi (regola D-12) ---
 
 def test_stesso_nome_con_tracciato_identico_o_traslato_di_30_m_e_duplicato_di_80_m_e_distinto() -> None:
     entries = [("cdi:1", "cdi", "Via Alfa"), ("mitur:2", "mitur", "Via Alfa"), ("mitur:3", "mitur", "Cammino Alfa")]
@@ -103,7 +103,7 @@ def test_geometria_assente_da_limbo_se_il_nome_e_simile_e_distinto_se_e_diverso(
 def test_nome_diverso_e_geometria_assente_e_distinto_con_il_suo_motivo() -> None:
     entries = [("cdi:1", "cdi", "Via Alfa"), ("mitur:2", "mitur", "Via Zeta")]
     pairs = dedup.pair_table(make_catalogue(entries), {"cdi:1": horizontal(0, 10_000)}, NEARS)
-    (row,) = dedup.classify(pairs, config.DEDUP_NAME_MIN_SCORE, config.DEDUP_OVERLAP_MIN, NEAR).to_dict("records")
+    (row,) = dedup.classify(pairs).to_dict("records")
     assert row == {"classe": DISTINTO, "motivo": config.MOTIVO_DISTINTO_GEOMETRIA_ASSENTE}
 
 
@@ -116,6 +116,7 @@ def share_table(rows: list[tuple[float, float, float, float]]) -> pd.DataFrame:
     frame[dedup.share_column("b_in_a", NEAR)] = frame.pop("b_in_a")
     frame["punteggio_nome"] = 100.0
     frame["parola_comune"] = True
+    frame["nome_contenuto"] = False
     return frame
 
 
@@ -130,7 +131,7 @@ def test_a_parita_di_lunghezza_la_quota_minore_e_la_piu_bassa_e_non_dipende_dall
     assert dedup.minor_share(forward, NEAR).tolist() == [0.50, 0.50, 0.70]
     assert dedup.minor_is_a(forward, NEAR).tolist() == [False, True, True]
     # classe identica scambiando a e b: prima (a in b 0,96) diventava duplicato o limbo secondo l'ordine del catalogo
-    classes = dedup.classify(forward, config.DEDUP_NAME_MIN_SCORE, config.DEDUP_OVERLAP_MIN, NEAR)["classe"]
+    classes = dedup.classify(forward)["classe"]
     assert classes.tolist() == [LIMBO, LIMBO, DUPLICATO]  # quota minore 0,50 / 0,50 / 0,70: le prime due da verificare
 
 
@@ -235,13 +236,58 @@ def test_riga_di_limbo_ha_oggetto_motivo_e_numeri_nel_dettaglio() -> None:
         assert expected in row["dettaglio"]
 
 
-# --- gruppi ---
+# --- soglie esatte ---
 
-def test_componenti_connesse_dagli_archi() -> None:
-    groups = dedup.connected_groups([("a", "b"), ("b", "c"), ("x", "y")])
-    assert sorted(sorted(group) for group in groups) == [["a", "b", "c"], ["x", "y"]]
-    assert dedup.connected_groups([]) == []
+def threshold_pairs(rows: list[tuple[float, float, bool, bool]]) -> pd.DataFrame:
+    """(punteggio del nome, quota minore, nome contenuto, parola in comune) -> tabella delle coppie a 50 m, lunghezze uguali."""
+    frame = share_table([(10, 10, quota, quota) for _, quota, _, _ in rows])
+    frame["punteggio_nome"] = [score for score, _, _, _ in rows]
+    frame["nome_contenuto"] = [contained for _, _, contained, _ in rows]
+    frame["parola_comune"] = [shared for _, _, _, shared in rows]
+    return frame
 
+
+def test_soglia_del_nome_95_inclusa_e_nome_poco_sotto_non_e_simile() -> None:
+    pairs = threshold_pairs([(95.0, 0.80, False, True), (94.99, 0.80, False, True), (100.0, 0.80, False, True)])
+    assert dedup.classify(pairs)["classe"].tolist() == [DUPLICATO, DISTINTO, DUPLICATO]
+
+
+def test_sezione_al_95_per_cento_inclusa_e_poco_sotto_no() -> None:
+    """Nome non simile con una parola in comune: 0,95 e' sezione, 0,9499 resta distinto; senza parola in comune e' limbo."""
+    pairs = threshold_pairs([
+        (60.0, 0.95, False, True), (60.0, 0.9499, False, True), (60.0, 0.95, False, False), (60.0, 0.9499, False, False),
+    ])
+    classes = dedup.classify(pairs)
+    assert classes["classe"].tolist() == [config.CLASSE_SEZIONE, DISTINTO, LIMBO, DISTINTO]
+    assert classes["motivo"].tolist()[0] == config.MOTIVO_SEZIONE
+
+
+def test_nome_contenuto_con_il_tracciato_contenuto_al_95_e_sezione_prima_del_duplicato() -> None:
+    """Il nome di una e' contenuto nell'altro (punteggio 100) e la quota e' >= 0,95: sezione; tra 0,70 e 0,95 resta duplicato."""
+    pairs = threshold_pairs([
+        (100.0, 0.95, True, True), (100.0, 0.9499, True, True), (100.0, 0.70, True, True), (100.0, 1.0, False, True),
+    ])
+    classes = dedup.classify(pairs)
+    assert classes["classe"].tolist() == [config.CLASSE_SEZIONE, DUPLICATO, DUPLICATO, DUPLICATO]
+    assert classes["motivo"].tolist() == [config.MOTIVO_SEZIONE, *[config.MOTIVO_DUPLICATO] * 3]  # l'ultima: nome uguale, non contenuto
+
+
+def test_la_sezione_con_nome_contenuto_ha_il_ruolo_sezione_e_la_fusione_non_cambia() -> None:
+    entries = [("cdi:1", "cdi", "Via Francigena"), ("mitur:2", "mitur", "Magna Via Francigena nel Sud"), ("mitur:3", "mitur", "Via Francigena")]
+    lines = {"cdi:1": horizontal(0, 10_000), "mitur:2": horizontal(0, 100_000, y=5), "mitur:3": horizontal(0, 10_000, y=-5)}
+    catalogue = make_catalogue(entries)
+    coppie = dedup.coppie_frame(dedup.pair_table(catalogue, lines, NEARS))
+    by_pair = coppie.set_index(["cammino_a", "cammino_b"])["classe"].to_dict()
+    assert by_pair[("cdi:1", "mitur:2")] == by_pair[("mitur:2", "mitur:3")] == config.CLASSE_SEZIONE
+    assert by_pair[("cdi:1", "mitur:3")] == DUPLICATO
+    merging = coppie[coppie["classe"].isin([DUPLICATO, config.CLASSE_SEZIONE])]
+    unici, membri = dedup.unique_frames(catalogue, {name: line.length for name, line in lines.items()}, merging)
+    assert len(unici) == 1 and unici.iloc[0]["nome"] == "Magna Via Francigena nel Sud"
+    roles = membri.set_index("cammino_id")["ruolo"].to_dict()
+    assert roles == {"mitur:2": config.RUOLO_PRINCIPALE, "cdi:1": config.RUOLO_SEZIONE, "mitur:3": config.RUOLO_SEZIONE}
+
+
+# --- catene ---
 
 def test_catena_di_tre_cammini_e_segnalata_e_la_coppia_completa_no() -> None:
     entries = [
@@ -255,16 +301,9 @@ def test_catena_di_tre_cammini_e_segnalata_e_la_coppia_completa_no() -> None:
     catalogue = make_catalogue(entries)
     coppie = dedup.coppie_frame(dedup.pair_table(catalogue, lines, NEARS))
     assert coppie.set_index(["cammino_a", "cammino_b"]).loc[("cdi:1", "mitur:3"), "classe"] == DISTINTO
-    gruppi = dedup.gruppi_frame(catalogue, lines, coppie[coppie["classe"] == DUPLICATO])
-    assert list(gruppi.columns) == list(config.DEDUP_GRUPPI_FIELDS)
-    by_group = gruppi.groupby("gruppo")
-    assert {name: sorted(group["cammino_id"]) for name, group in by_group} == {
-        "g001": ["cdi:1", "cdi:2", "mitur:3"], "g002": ["cdi:4", "mitur:5"],
-    }
-    assert gruppi.set_index("cammino_id")["catena"].to_dict() == {
-        "cdi:1": True, "cdi:2": True, "mitur:3": True, "cdi:4": False, "mitur:5": False,
-    }
-    assert gruppi.set_index("cammino_id").loc["cdi:2", "lunghezza_m"] == 10_000
+    unici, _ = dedup.unique_frames(catalogue, {name: line.length for name, line in lines.items()}, coppie[coppie["classe"] == DUPLICATO])
+    groups = {tuple(row.membri.split("|")): row.catena for row in unici.itertuples() if row.n_membri > 1}
+    assert groups == {("cdi:1", "cdi:2", "mitur:3"): True, ("cdi:4", "mitur:5"): False}
 
 
 # --- cammini unici e membri ---
@@ -314,6 +353,19 @@ def test_ogni_cammino_del_catalogo_compare_una_volta_in_membri_e_i_nomi_uguali_n
     assert unici.iloc[0]["nome"] == "Via Alfa"
 
 
+def test_gli_alias_sono_uno_per_chiave_di_nome_senza_maiuscole_articoli_e_parole_generiche() -> None:
+    entries = [
+        ("cdi:1", "cdi", "Cammino di San Vili"), ("mitur:2", "mitur", "Cammino San Vili"), ("cdi:3", "cdi", "CAMMINO DI SAN VILI"),
+        ("mitur:4", "mitur", "Via di San Vili - Alta"), ("cdi:5", "cdi", "Alta Via di San Vili"),
+    ]
+    catalogue = make_catalogue(entries)
+    edges = [("cdi:1", other, DUPLICATO) for other in ("mitur:2", "cdi:3", "mitur:4", "cdi:5")]
+    unici, _ = dedup.unique_frames(catalogue, {"cdi:1": 10.0}, merging_of(edges))
+    # le prime tre hanno la chiave "san vili" del principale: nessun alias; le altre due hanno chiavi diverse e restano
+    assert unici.iloc[0]["nome"] == "Cammino di San Vili"
+    assert unici.iloc[0]["alias"] == "Via di San Vili - Alta|Alta Via di San Vili"
+
+
 def test_senza_nessun_arco_ogni_cammino_e_il_proprio_gruppo_e_la_catena_si_segnala() -> None:
     catalogue = toy_unique_catalogue()
     unici, membri = dedup.unique_frames(catalogue, {}, merging_of([]))
@@ -329,24 +381,47 @@ def test_senza_nessun_arco_ogni_cammino_e_il_proprio_gruppo_e_la_catena_si_segna
 # --- sensibilita' ---
 
 def toy_sensitivity_pairs() -> pd.DataFrame:
-    """Tre cammini con lo stesso nome, di pari lunghezza e traslati lungo l'asse: quote ~0,855, ~0,925 e ~0,935; un quarto lontano."""
+    """Tre cammini con lo stesso nome, di pari lunghezza e traslati lungo l'asse, e un quarto lontano di nome diverso.
+
+    Le tre coppie dello stesso nome hanno quota ~0,715 (1-2), ~0,475 (1-3) e ~0,765 (2-3), a meno di 0,01 alle tre
+    distanze; le altre tre coppie (col quarto) sono distinte.
+    """
     entries = [(f"cdi:{n}", "cdi", "Via Alfa") for n in (1, 2, 3)] + [("cdi:4", "cdi", "Via Zeta")]
     lines = {
-        "cdi:1": horizontal(0, 10_000), "cdi:2": horizontal(1500, 11_500), "cdi:3": horizontal(800, 10_800),
+        "cdi:1": horizontal(0, 10_000), "cdi:2": horizontal(2900, 12_900), "cdi:3": horizontal(5300, 15_300),
         "cdi:4": horizontal(0, 10_000, y=300_000),
     }
     return dedup.pair_table(make_catalogue(entries), lines, NEARS)
 
 
-def test_sensibilita_conta_le_classi_a_ogni_combinazione_di_soglie() -> None:
-    table = dedup.sensitivity_frame(toy_sensitivity_pairs())
+def test_sensibilita_conta_le_classi_a_ogni_combinazione_di_soglie_e_i_conteggi_sommano_alle_coppie() -> None:
+    pairs = toy_sensitivity_pairs()
+    table = dedup.sensitivity_frame(pairs)
     assert list(table.columns) == list(config.DEDUP_SENSIBILITA_FIELDS)
-    assert len(table) == len(config.DEDUP_SENS_NAME_SCORES) * len(config.DEDUP_SENS_OVERLAPS) * len(config.DEDUP_SENS_NEAR_M)
-    expected = {0.80: (3, 0, 3), 0.85: (3, 0, 3), 0.90: (2, 1, 3), 0.95: (0, 3, 3)}  # (duplicato, limbo, distinto)
+    axes = (config.DEDUP_SENS_NAME_SCORES, config.DEDUP_SENS_OVERLAPS, config.DEDUP_SENS_DISTINCT_BELOW, config.DEDUP_SENS_NEAR_M)
+    assert len(table) == np.prod([len(axis) for axis in axes])
+    assert config.DEDUP_OVERLAP_MIN in config.DEDUP_SENS_OVERLAPS and config.DEDUP_DISTINCT_BELOW in config.DEDUP_SENS_DISTINCT_BELOW
     for row in table.itertuples():
-        assert (row.n_duplicato, row.n_limbo, row.n_distinto) == expected[row.soglia_quota]
+        duplicates = sum(share >= row.soglia_quota for share in (0.715, 0.765))
+        apart = int(0.475 < row.soglia_distinto)
+        assert (row.n_duplicato, row.n_sezione, row.n_limbo, row.n_distinto) == (duplicates, 0, 3 - duplicates - apart, 3 + apart)
+        assert row.n_duplicato + row.n_sezione + row.n_limbo + row.n_distinto == len(pairs)
         assert row.n_nome_100 == 3 and row.n_nome_100_geometria_assente == 0
-        assert row.n_nome_100_tracciato_diverso == row.n_limbo
+        assert row.n_nome_100_tracciato_diverso == 3 - duplicates
+
+
+def test_sensibilita_conta_le_sezioni_e_la_riga_adottata_coincide_con_coppie() -> None:
+    entries = [("cdi:1", "cdi", "Via di Francesco da Firenze"), ("mitur:2", "mitur", "Via di Francesco in Toscana"), ("cdi:3", "cdi", "Cammino Zeta")]
+    lines = {"cdi:1": horizontal(0, 40_000, y=10), "mitur:2": horizontal(0, 100_000), "cdi:3": horizontal(0, 10_000, y=500_000)}
+    pairs = dedup.pair_table(make_catalogue(entries), lines, NEARS)
+    table = dedup.sensitivity_frame(pairs)
+    assert (table["n_sezione"] == 1).all() and (table["n_duplicato"] == 0).all()
+    adopted = table[
+        (table["soglia_nome"] == config.DEDUP_NAME_MIN_SCORE) & (table["soglia_quota"] == config.DEDUP_OVERLAP_MIN)
+        & (table["soglia_distinto"] == config.DEDUP_DISTINCT_BELOW) & (table["distanza_m"] == NEAR)
+    ]
+    counts = dedup.coppie_frame(pairs)["classe"].value_counts()
+    assert adopted.iloc[0]["n_sezione"] == counts.get(config.CLASSE_SEZIONE, 0) == 1
 
 
 def test_sensibilita_con_geometria_assente_conta_i_nomi_identici_a_parte() -> None:
@@ -489,7 +564,7 @@ def test_selezione_per_il_confronto_unisce_duplicati_e_quasi_duplicati() -> None
 
 # --- percorso completo e comando ---
 
-def test_run_scrive_le_sei_uscite_con_le_colonne_del_contratto(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_scrive_una_uscita_per_file_di_config_con_le_colonne_del_contratto_e_fine_riga_lf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     tratte = toy_tratte()
     entries = [("cdi:1", "cdi", "Via Alfa"), ("mitur:2", "mitur", "Via Alfa"), ("mitur:3", "mitur", "Via Alfa Zeta")]
     monkeypatch.setattr(config, "DEDUP_DIR", tmp_path)
@@ -498,19 +573,20 @@ def test_run_scrive_le_sei_uscite_con_le_colonne_del_contratto(tmp_path: Path, m
     monkeypatch.setattr(crossing, "load_comuni", toy_comuni)
     dedup.run()
     fields = {
-        "coppie": config.DEDUP_COPPIE_FIELDS, "limbo": config.LIMBO_FIELDS, "gruppi": config.DEDUP_GRUPPI_FIELDS,
+        "coppie": config.DEDUP_COPPIE_FIELDS, "limbo": config.LIMBO_FIELDS,
         "sensibilita": config.DEDUP_SENSIBILITA_FIELDS, "quasi": config.DEDUP_QUASI_FIELDS, "comuni": config.DEDUP_COMUNI_FIELDS,
         "unici": config.DEDUP_UNICI_FIELDS, "membri": config.DEDUP_MEMBRI_FIELDS,
     }
+    assert set(fields) == set(config.DEDUP_FILES)  # nessun file senza contratto e nessuno in piu'
     for name, columns in fields.items():
         frame = pd.read_csv(tmp_path / config.DEDUP_FILES[name], encoding="utf-8")
         assert list(frame.columns) == list(columns)
-    assert len(pd.read_csv(tmp_path / config.DEDUP_FILES["sensibilita"])) == 48
+    grid = (config.DEDUP_SENS_NAME_SCORES, config.DEDUP_SENS_OVERLAPS, config.DEDUP_SENS_DISTINCT_BELOW, config.DEDUP_SENS_NEAR_M)
+    assert len(pd.read_csv(tmp_path / config.DEDUP_FILES["sensibilita"])) == np.prod([len(axis) for axis in grid])
     limbo = pd.read_csv(tmp_path / config.DEDUP_FILES["limbo"])
     assert sorted(limbo["oggetto"]) == ["cdi:1|mitur:3", "mitur:2|mitur:3"]  # nome simile, geometria assente
-    # il limbo ha lo scrittore dei limbo_<fonte>.csv (fine riga CRLF); le tabelle hanno LF
-    assert b"\r\n" in (tmp_path / config.DEDUP_FILES["limbo"]).read_bytes()
-    assert b"\r\n" not in (tmp_path / config.DEDUP_FILES["coppie"]).read_bytes()
+    for name in config.DEDUP_FILES:  # un solo fine riga (LF) per tutte le uscite, limbo compreso
+        assert b"\r" not in (tmp_path / config.DEDUP_FILES[name]).read_bytes()
     unici = pd.read_csv(tmp_path / config.DEDUP_FILES["unici"], keep_default_na=False)
     membri = pd.read_csv(tmp_path / config.DEDUP_FILES["membri"])
     assert len(unici) == 2 and len(membri) == 3 and membri["cammino_id"].is_unique  # cdi:1 con mitur:2 (duplicato), mitur:3 da solo

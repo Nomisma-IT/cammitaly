@@ -1,5 +1,7 @@
 """Unica sede di tutte le costanti: percorsi, URL, ritmo delle richieste, tetti."""
+import os
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 # Radice del repo: src/cammitaly/config.py -> due livelli sopra la cartella del pacchetto
@@ -32,7 +34,7 @@ HOST_GEOFABRIK = "geofabrik"
 HOSTS: dict[str, HostPolicy] = {
     HOST_CDI: HostPolicy(11.0, 6),  # robots.txt: Crawl-delay 10
     HOST_MAPHUB: HostPolicy(6.0, 5),
-    HOST_S3: HostPolicy(1.0, 1400),  # hosting statico S3, 1 richiesta/s e' molto cortese
+    HOST_S3: HostPolicy(1.0, 1400),  # hosting statico S3, 1 richiesta/s e' molto cortese; webmapp lo adegua all'elenco (sotto)
     HOST_MITUR: HostPolicy(10.0, 150),  # solo zip, mai pagine di elenco (controllo Radware)
     HOST_ISTAT: HostPolicy(5.0, 5),  # file statici su www.istat.it, non il servizio SDMX
     HOST_GEOFABRIK: HostPolicy(5.0, 3),
@@ -59,6 +61,9 @@ WEBMAPP_CONFIG_URL = "https://wmfe.s3.eu-central-1.amazonaws.com/camminiditalia/
 WEBMAPP_LISTING_URL = "https://camminiditalia.maphub.it/api/v2/elasticsearch/?app=geohub_app_1"
 WEBMAPP_TRACK_URL = "https://wmfe.s3.eu-central-1.amazonaws.com/camminiditalia/tracks/{track_id}.json"
 WEBMAPP_TRACKS_CSV = INTERIM_DIR / "webmapp_tracks.csv"
+# Tetto di richieste a S3 in una esecuzione = richieste gia' fatte + tracce dell'elenco + questo margine: il catalogo
+# cresce, ma un ciclo fuori controllo si ferma comunque dopo al piu' MARGIN richieste in piu' del necessario
+WEBMAPP_REQUEST_MARGIN = 100
 
 # --- Ministero del Turismo, Catalogo dei Cammini religiosi ---
 MITUR_RAW_DIR = RAW_DIR / "mitur"
@@ -92,6 +97,8 @@ SLUG_STRIP_PATTERN = r"[^a-z0-9]+"
 # Il numero di pagina si legge dal link canonical, non dal nome del file salvato a mano
 MITUR_CANONICAL_PATTERN = r'<link\s+rel="canonical"\s+href="([^"]+)"'
 MITUR_PAGE_NUMBER_PATTERN = r"/page/(\d+)/?$"
+# Paginazione WordPress: ogni numero e' un elemento con classe page-numbers (link o "current"); il piu' alto e' l'ultima pagina
+MITUR_PAGINATION_PATTERN = r'class="page-numbers[^"]*"[^>]*>\s*(\d+)\s*<'
 MITUR_CATALOG_DATE_PATTERN = r"dal\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s*(?:\((.*)\))?"
 MESI_IT = {
     "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4, "maggio": 5, "giugno": 6,
@@ -122,7 +129,9 @@ ISTAT_INDEX_URL = (
 ISTAT_INDEX_FILE = ISTAT_RAW_DIR / "indice.html"
 ISTAT_EXTRACT_DIR = ISTAT_RAW_DIR / "estratto"
 ISTAT_SOURCE_FILE = ISTAT_RAW_DIR / "SOURCE.txt"
-ISTAT_EDITION_YEAR = "2026"
+# Anno dell'edizione dei confini: quello in corso, a meno che CAMMITALY_ISTAT_YEAR non lo fissi (letto all'importazione)
+ISTAT_YEAR_ENV = "CAMMITALY_ISTAT_YEAR"
+ISTAT_EDITION_YEAR = os.environ.get(ISTAT_YEAR_ENV) or str(date.today().year)
 # Edizione al 1 gennaio, versione non generalizzata (la generalizzata ha "_g" e cartella generalizzati)
 ISTAT_ZIP_LINK_PATTERN = r'href="([^"]*/non_generalizzati/{year}/Limiti0101{year}\.zip)"'
 
@@ -326,18 +335,16 @@ OSM_DECLARED_DECIMALS = 3
 # --- Etichette dei cammini e delle tratte (tags.py) ---
 TAGS_TRATTE_CSV = INTERIM_DIR / "etichette_tratte.csv"
 TAGS_CAMMINI_CSV = INTERIM_DIR / "etichette_cammini.csv"
-TAGS_CHECK_CSV = INTERIM_DIR / "controllo_religioso.csv"
 TAGS_TRATTE_FIELDS = ["tratta_id", "cammino_id", "fonte", "mezzo", "evidenza_mezzo"]
 TAGS_CAMMINI_FIELDS = [
     "cammino_id", "fonte", "mezzo", "religioso", "evidenza_religioso", "tipologia", "portata", "tema",
     "stagione", "credenziale", "segnaletica", "data_catalogo",
 ]
-TAGS_CHECK_FIELDS = ["cammino_id", "fonte", "nome", "parole"]
 # Valori nei dati intermedi: ASCII ("si", mai "sì"); i campi multivalore sono uniti da LIST_SEPARATOR e ordinati
 MEZZO_PIEDI, MEZZO_BICI, MEZZO_ENTRAMBI = "piedi", "bici", "entrambi"
 SI, NO = "si", "no"
 LIST_SEPARATOR = "|"
-EVIDENZA_SILENTE = "silente"
+EVIDENZA_SILENTE = "nessuna fonte"
 EVIDENZA_PIEDI = "pubblicata a piedi"
 EVIDENZA_TIPO_BICI = "tipo bici"
 EVIDENZA_NOME_ENTRAMBI = "nome: camminanti e bici"
@@ -348,10 +355,15 @@ EVIDENZA_ROUTE_ALTRA = "route={} (non e' un percorso a piedi o in bici: a piedi)
 EVIDENZA_OSM_NETWORK = "network={}"
 EVIDENZA_NOME_BICI = "nome: bici"
 EVIDENZA_WEBMAPP = "Webmapp: {}"
-EVIDENZA_CATALOGO_RELIGIOSO = "catalogo dei cammini religiosi"
-EVIDENZA_TEMA_CDI = "tema cdi: spirituale"
-EVIDENZA_TEMA_LAYER = "tema Webmapp: spirituale"
-EVIDENZA_PILGRIMAGE = "pilgrimage={}"
+EVIDENZA_CATALOGO_RELIGIOSO = "Catalogo dei cammini religiosi del Ministero del Turismo"
+EVIDENZA_TEMA_CDI = "camminiditalia.org: tema spirituale"
+EVIDENZA_TEMA_LAYER = "mappa Cammini d'Italia: tema spirituale"
+EVIDENZA_PILGRIMAGE = "OpenStreetMap: indicato come pellegrinaggio"
+EVIDENZA_PILGRIMAGE_NOMINATO = "OpenStreetMap: indicato come pellegrinaggio ({})"
+EVIDENZA_PILGRIMAGE_NEGATIVO = "OpenStreetMap: indicato come non di pellegrinaggio (pilgrimage={})"
+# Parole religiose nel nome di un cammino del catalogo (cdi, mitur): una sola o piu' di una
+EVIDENZA_NOME_PAROLA = "il nome contiene la parola {}"
+EVIDENZA_NOME_PAROLE = "il nome contiene le parole {}"
 EVIDENZA_SEPARATOR = "; "
 # Webmapp: attivita' dichiarate dalla traccia (stringa JSON {"<id>": ["hiking", ...]}) e nomi della tassonomia delle
 # attivita' (it/en). Un'attivita' per bici o a piedi si riconosce dal nome; la traccia a piedi con un'attivita' per
@@ -391,11 +403,14 @@ TAGS_RELIGIOUS_WORDS = (
 ISTAT_ENCODING = "utf-8"
 ISTAT_COMUNI_SHP = ISTAT_EXTRACT_DIR / f"Com0101{ISTAT_EDITION_YEAR}" / f"Com0101{ISTAT_EDITION_YEAR}_WGS84.shp"
 ISTAT_REGIONI_SHP = ISTAT_EXTRACT_DIR / f"Reg0101{ISTAT_EDITION_YEAR}" / f"Reg0101{ISTAT_EDITION_YEAR}_WGS84.shp"
+ISTAT_PROVINCE_SHP = ISTAT_EXTRACT_DIR / f"ProvCM0101{ISTAT_EDITION_YEAR}" / f"ProvCM0101{ISTAT_EDITION_YEAR}_WGS84.shp"
 COMUNE_ID_COL, COMUNE_NAME_COL, COMUNE_REGION_COL = "PRO_COM_T", "COMUNE", "COD_REG"
 REGION_CODE_COL, REGION_NAME_COL = "COD_REG", "DEN_REG"
+# Unita' territoriale sovracomunale (provincia o citta' metropolitana): codice nello shapefile dei comuni, nome e sigla in ProvCM
+PROVINCE_CODE_COL, PROVINCE_NAME_COL, PROVINCE_SIGLA_COL = "COD_UTS", "DEN_UTS", "SIGLA"
 ID_SEPARATOR = ":"  # separa la fonte dal resto negli identificativi ("cdi:123", "mitur:slug")
-# Tipi di tratta che formano la linea di un cammino; le tracce per bici non sono cammino a piedi
-CROSSING_TIPI = (TIPO_TAPPA, TIPO_VARIANTE, TIPO_ALTRO)
+# Tipi di tratta che formano la linea di un cammino: tutti, anche le tracce per bici (decisione del committente)
+CROSSING_TIPI = (TIPO_TAPPA, TIPO_VARIANTE, TIPO_ALTRO, TIPO_BICI)
 # dentro = la linea tocca o entra nel comune (indipendente dall'arrotondamento di distanza_m)
 CROSSING_FIELDS = ("cammino_id", COMUNE_ID_COL, "distanza_m", "dentro", "lunghezza_dentro_m")
 # Raggio iniziale del ritaglio locale della linea attorno a un comune; raddoppia finche' la distanza non e' certa
@@ -404,11 +419,74 @@ CROSSING_CLIP_START_M = 1000.0
 # Distanza d dal confine comunale scelta dal committente: calibrata sui dati (recall saturo, costo contenuto)
 CROSSING_DISTANCE_M = 100
 
+# --- Coppie cammino-comune (pairs.py) ---
+# Contratto delle uscite: coppie_comuni.csv ha una riga per (cammino distinto, comune); cammini.csv ha una riga per
+# ogni cammino distinto di dedup/cammini_unici.csv, anche senza comuni. Valori ASCII, campi multipli uniti da LIST_SEPARATOR
+PAIRS_DIR = INTERIM_DIR / "comuni"
+PAIRS_FILES = {"coppie": "coppie_comuni.csv", "cammini": "cammini.csv"}
+PAIRS_UNICO_COL = "cammino_unico_id"
+PAIRS_COPPIE_FIELDS = (
+    PAIRS_UNICO_COL, "nome", COMUNE_ID_COL, "comune", "sigla", "cod_uts", "provincia", "cod_reg", "regione", "ordine",
+    "mezzo", "religioso", "distanza_m", "dentro", "fonte_geometria",
+)
+# Etichette multivalore del cammino: unione dei valori dei membri e delle relazioni OSM abbinate. L'evidenza del carattere
+# religioso e' a parte: unisce solo le evidenze delle righe che dicono si (altrimenti EVIDENZA_SILENTE)
+PAIRS_MULTI_FIELDS = ("tipologia", "portata", "tema", "stagione", "credenziale", "segnaletica", "data_catalogo")
+PAIRS_CAMMINI_FIELDS = (
+    PAIRS_UNICO_COL, "nome", "alias", "fonti", "membri", "mezzo", "religioso", "evidenza_religioso", *PAIRS_MULTI_FIELDS, "regioni",
+    "lunghezza_dichiarata_km", "lunghezza_tracciata_km", "copertura", "fonte_geometria", "nota", "n_comuni",
+)
+# Colonne degli shapefile ISTAT (comuni, province, regioni) -> colonne di coppie_comuni.csv
+PAIRS_COMUNE_COLUMNS = {
+    COMUNE_NAME_COL: "comune", PROVINCE_SIGLA_COL: "sigla", PROVINCE_CODE_COL: "cod_uts",
+    PROVINCE_NAME_COL: "provincia", COMUNE_REGION_COL: "cod_reg", REGION_NAME_COL: "regione",
+}
+FONTE_GEOMETRIA_CATALOGO, FONTE_GEOMETRIA_OSM, FONTE_GEOMETRIA_NESSUNA = "catalogo", "osm", "nessuna"
+# Tracce di catalogo di un membro insieme al sostituto OSM di un altro membro dello stesso cammino distinto
+FONTE_GEOMETRIA_CATALOGO_OSM = "catalogo e osm"
+PAIRS_COPERTURA_DECIMALS = 2
+PAIRS_LUNGHEZZA_DECIMALS = 1  # lunghezza_tracciata_km
+# Ordinamento naturale degli id delle tracce: i gruppi di cifre si confrontano come numeri ("tappa 2" prima di "tappa 10")
+NATURAL_SORT_PATTERN = r"(\d+)"
+# Ordine dei comuni lungo il percorso (D-9). Dorsale: le tracce di questi tipi del principale, nell'ordine delle tappe;
+# se il principale non ne ha, quelle del membro che ne ha di piu' lunghe; se nessun membro ha tracce del primo tipo si
+# passa al successivo (le tracce altro sono i percorsi interi o senza numero di tappa; poi qualunque tipo, cioe' varianti
+# e bici, perche' un cammino con tracce abbia sempre una dorsale e una lunghezza); in ultimo la geometria OSM sostitutiva.
+# Lo stesso tipo vale per la lunghezza tracciata: le tracce del tipo di un membro si misurano come unione, la piu' lunga per
+# intero e delle altre solo le parti oltre DEDUP_NEAR_M da quanto e' gia' contato (copie e alternative non si sommano)
+# Catena delle tappe: una tappa che comincia (o finisce) a meno di cosi' dalla fine della catena e' attaccata ad essa; tra
+# le attaccate vince quella di ordine minore (il rumore del GPS non deve scavalcare la numerazione), se nessuna e'
+# attaccata (cambio di ramo) vince la piu' vicina
+PAIRS_CHAIN_TIE_M = 500
+# Ancora di una sezione: la partenza di una sezione e' quella del cammino intero solo se sta a un capo della rete di tappe
+# del cammino intero, cioe' a meno di cosi' da un estremo di tappa senza altri estremi di altre tappe entro
+# PAIRS_CHAIN_TIE_M (un capo libero). Una sezione che parte da un incrocio a meta' rete non dice dove comincia il cammino
+PAIRS_ANCHOR_MAX_M = 2000
+PAIRS_TIPO_QUALUNQUE = "qualunque"
+PAIRS_SPINE_TIPI = (TIPO_TAPPA, TIPO_ALTRO, PAIRS_TIPO_QUALUNQUE)
+# La dorsale si campiona ogni PAIRS_ROUTE_STEP_M metri in corde (tratti tra due campioni consecutivi). Un comune che la
+# dorsale attraversa sta alla prima corda che lo tocca (ingresso); uno solo vicino, alla prima corda entro
+# CROSSING_DISTANCE_M; uno mai entro d, al punto piu' vicino. A pari posizione prima i comuni attraversati, poi il codice.
+# Errore: la posizione vera cade tra l'inizio e la fine della corda, quindi al massimo un passo dopo quella trovata (mezzo
+# passo da una parte o dall'altra per un comune mai entro d). Due comuni possono quindi scambiarsi solo se raggiunti a meno
+# di 1,5 passi (15 m) l'uno dall'altro. Una corda dista al piu' mezzo passo (5 m) dalla linea reale: un ingresso piu'
+# stretto di cosi' non si vede e il comune resta alla posizione del primo tratto entro d (prima, di al piu' d)
+PAIRS_ROUTE_STEP_M = 10
+# Note del cammino (testi del committente in italiano), unite da PAIRS_NOTA_SEPARATOR. Il limbo di dedup con geometria
+# assente dice che manca il confronto; gli altri motivi di limbo riportano il motivo stesso
+PAIRS_NOTA_LIMBO_GEOMETRIA = "possibile duplicato di {nome} ({unico}): manca la geometria per il confronto"
+PAIRS_NOTA_LIMBO_ALTRO = "possibile duplicato di {nome} ({unico}): {motivo}"
+PAIRS_NOTA_NESSUNA_GEOMETRIA = "nessuna geometria disponibile: comuni non determinabili"
+PAIRS_NOTA_SEPARATOR = "; "
+
 # --- Confronto tra cammini: nomi e sovrapposizione dei tracciati (primitive di matching.py) ---
 # Passo (m) dei punti con cui si misura la quota di una linea vicina a un'altra: con 10 m su soglie di 25 m
 # o piu' l'errore della quota e' sotto l'1%, e non si bufferizza mai la linea lunga (secondi per coppia)
 MATCH_SAMPLE_M = 10
 RATIO_DECIMALS = 4  # quote e rapporti nei CSV
+# Le linee si spezzano in pezzi di al massimo tanti vertici per l'indice spaziale: la distanza di un punto da un pezzo
+# corto costa poco, da una parte di decine di migliaia di vertici molto
+MATCH_PIECE_VERTICES = 64
 # Parole che non distinguono un cammino da un altro: tolte dal nome prima del confronto. Articoli e preposizioni
 # (anche nelle forme elise, "dell'" -> "dell") e i sostantivi generici dei percorsi. Non si tolgono "alta", "anello",
 # "romea" ecc. (distinguono percorsi diversi che condividono le altre parole) ne' "san", "santa" e simili: "Cammino
@@ -434,7 +512,9 @@ DEDUP_TIPI = (TIPO_TAPPA, TIPO_VARIANTE, TIPO_BICI, TIPO_ALTRO)
 # corto entro DEDUP_NEAR_M metri dall'altro = lo stesso cammino (duplicato); meno di DEDUP_DISTINCT_BELOW (con entrambe
 # le geometrie) = cammini distinti; in mezzo = limbo "da verificare". Nome non simile: il piu' corto contenuto per almeno
 # DEDUP_SECTION_OVERLAP_MIN in un altro con almeno una parola in comune nella chiave del nome = sezione dell'intero
-# (si fonde); senza parole in comune la coppia resta in limbo. Con una geometria assente e nome simile: limbo
+# (si fonde); senza parole in comune la coppia resta in limbo. Con una geometria assente e nome simile: limbo.
+# Un nome contenuto nell'altro ("Via Francigena" in "Magna Via Francigena nel Sud") con il tracciato contenuto per
+# almeno DEDUP_SECTION_OVERLAP_MIN e' una sezione anche se il punteggio lo dice simile (cambia l'etichetta, non la fusione)
 DEDUP_OVERLAP_MIN = 0.70
 DEDUP_DISTINCT_BELOW = 0.50
 DEDUP_SECTION_OVERLAP_MIN = 0.95
@@ -445,9 +525,12 @@ DEDUP_NEAR_M = 50
 # l'unica coppia di questa fascia con il tracciato contenuto e' quella delle Colline Novaresi (84,2), due cammini
 # distinti. Ogni soglia tra 87,6 e 100 da' lo stesso insieme: 95 sta in mezzo con margine da entrambi i lati
 DEDUP_NAME_MIN_SCORE = 95
-# Griglia di sensibilita': soglia sul nome x quota minima x distanza
+# Griglia di sensibilita': soglia sul nome x quota minima del duplicato x quota sotto cui e' distinto x distanza.
+# Le quote e la distanza sono centrate sui valori adottati (0,70 / 0,50 / 50 m); i due estremi della fascia in
+# mezzo non si incrociano mai (il piu' alto dei distinti coincide col piu' basso dei duplicati)
 DEDUP_SENS_NAME_SCORES = (80, 85, 90, 95)
-DEDUP_SENS_OVERLAPS = (0.80, 0.85, 0.90, 0.95)
+DEDUP_SENS_OVERLAPS = (0.60, 0.65, 0.70, 0.75, 0.80)
+DEDUP_SENS_DISTINCT_BELOW = (0.40, 0.50, 0.60)
 DEDUP_SENS_NEAR_M = (25, 50, 100)
 DEDUP_NEAR_VALUES_M = tuple(sorted({DEDUP_NEAR_M, *DEDUP_SENS_NEAR_M}))
 # coppie.csv tiene i candidati: nome almeno cosi' simile (la soglia piu' bassa della griglia) oppure tracciati che si toccano
@@ -464,7 +547,7 @@ MOTIVO_DISTINTO = "nome e tracciato diversi"
 MOTIVO_DISTINTO_GEOMETRIA_ASSENTE = "nome diverso, geometria assente"
 DEDUP_PAIR_SEPARATOR = "|"  # oggetto del limbo: "cammino_a|cammino_b"
 DEDUP_FILES = {
-    "coppie": "coppie.csv", "limbo": "limbo_dedup.csv", "gruppi": "gruppi.csv",
+    "coppie": "coppie.csv", "limbo": "limbo_dedup.csv",
     "sensibilita": "sensibilita.csv", "quasi": "quasi_duplicati.csv", "comuni": "confronto_comuni.csv",
     "unici": "cammini_unici.csv", "membri": "membri.csv",
 }
@@ -484,9 +567,9 @@ RUOLO_PRINCIPALE, RUOLO_DUPLICATO, RUOLO_SEZIONE = "principale", "duplicato", "s
 DEDUP_LIST_SEPARATOR = "|"
 # Stato del cammino unico: il migliore tra quelli dei membri
 DEDUP_STATO_ORDER = (STATO_OK, STATO_PARZIALE, STATO_ASSENTE)
-DEDUP_GRUPPI_FIELDS = ("gruppo", "cammino_id", "fonte", "nome", "stato_geometria", "lunghezza_m", "catena")
+# n_duplicato + n_sezione + n_limbo + n_distinto = tutte le coppie confrontate
 DEDUP_SENSIBILITA_FIELDS = (
-    "soglia_nome", "soglia_quota", "distanza_m", "n_duplicato", "n_limbo", "n_distinto",
+    "soglia_nome", "soglia_quota", "soglia_distinto", "distanza_m", "n_duplicato", "n_sezione", "n_limbo", "n_distinto",
     "n_nome_100", "n_nome_100_tracciato_diverso", "n_nome_100_geometria_assente",
 )
 # Coppie quasi duplicate (solo diagnosi dei tratti lontani): nome come per i duplicati, quota minore da questo valore a DEDUP_QUASI_OVERLAP_MAX
@@ -501,11 +584,10 @@ DEDUP_QUASI_FIELDS = (
 # di tolleranza numerica) è il passaggio a un'altra parte non contigua: li' un segmento lontano si interrompe
 DEDUP_STEP_TOLERANCE = 1.000001
 # Formati delle uscite: cifre decimali dei punteggi dei nomi nei CSV, dei numeri nel dettaglio del limbo (punteggio
-# e km; le quote usano RATIO_DECIMALS), dei km; modello dell'identificativo di gruppo
+# e km; le quote usano RATIO_DECIMALS), dei km
 SCORE_DECIMALS = 2
 DEDUP_DETAIL_DECIMALS = 1
 KM_DECIMALS = 3
-DEDUP_GROUP_ID_FORMAT = "g{number:03d}"
 DEDUP_NOT_AVAILABLE = "n.d."  # numero mancante nel dettaglio del limbo
 # Diagnosi in parole di un tratto che nel cammino piu' corto sta lontano dall'altro, in quest'ordine:
 # 1 sfasamento: i punti lontani non superano questa distanza, il tracciato e' lo stesso spostato di lato
@@ -534,8 +616,10 @@ OSM_MATCH_FILES = {"abbinamenti": "abbinamenti.csv", "geometrie": "geometrie_osm
 OSM_MATCH_LAYER = "osm_cammini"
 OSM_MATCH_NAME_MIN_SCORE = DEDUP_NAME_MIN_SCORE
 OSM_MATCH_NEAR_M = DEDUP_NEAR_M
-# Con tracce: abbinata se il nome e' simile e almeno questa quota del catalogo sta sulla relazione o della relazione
-# sul catalogo (la seconda accoglie le tappe OSM di un cammino lungo)
+# Con tracce: una relazione e' candidata se il nome e' simile e almeno questa quota del catalogo sta sulla relazione o
+# della relazione sul catalogo (la seconda accoglie le tappe OSM di un cammino lungo). La relazione (o l'unione di
+# quelle tenute) e' abbinata se la quota vale per entrambe le direzioni, oppure per una sola e la lunghezza sta
+# nell'intervallo OSM_MATCH_LENGTH_RATIO_*; altrimenti e' una parte del cammino (parziale) o lo contiene (contenitore)
 OSM_MATCH_SHARE_MIN = 0.70
 # Solo geometria (non e' un abbinamento): nome diverso ma entrambe le quote almeno a questo valore
 OSM_MATCH_GEOMETRY_ONLY_MIN = 0.95
@@ -543,10 +627,13 @@ OSM_MATCH_GEOMETRY_ONLY_MIN = 0.95
 OSM_MATCH_NESTED_MIN = 0.95
 # Senza tracce: la relazione deve stare per almeno questa quota della sua lunghezza nelle regioni dichiarate
 OSM_MATCH_REGION_SHARE_MIN = 0.80
-# Senza tracce, con lunghezza dichiarata: lunghezza OSM / dichiarata in questo intervallo (lo stesso del controllo
-# delle tratte camminiditalia)
-OSM_MATCH_LENGTH_RATIO_MIN = CDI_LENGTH_RATIO_MIN
-OSM_MATCH_LENGTH_RATIO_MAX = CDI_LENGTH_RATIO_MAX
+# Un solo intervallo di lunghezza per i cammini con e senza tracce: lunghezza OSM / lunghezza di riferimento, che e' la
+# dichiarata dal catalogo o, se manca, quella del tracciato del catalogo. Il massimo e' anche il limite oltre il quale
+# una relazione e' troppo lunga per essere il cammino (un contenitore) e si scarta prima dell'annidamento. Sui dati del
+# 3 novembre 2026: i 10 abbinamenti senza tracce hanno rapporto 0,53-1,34 e i 145 con tracce hanno mediana 1,00, con
+# 20 fuori da 0,5-2,0 (superpercorsi di 2,4-15 volte, tratti brevi) e 26 fuori da 0,67-1,5
+OSM_MATCH_LENGTH_RATIO_MIN = 0.5
+OSM_MATCH_LENGTH_RATIO_MAX = 1.5
 # Senza tracce, senza lunghezza dichiarata: il gruppo OSM deve essere lungo almeno cosi'. E' la distanza dichiarata piu'
 # corta del catalogo (dati del 3 novembre 2026: 262 cammini su 263 la dichiarano, minimo 5 km, 1o percentile 9,6 km):
 # nessun cammino del catalogo e' piu' corto, mentre i falsi positivi visti erano una ferrata di 0,3 km e un sentiero di 2,3 km
@@ -558,10 +645,12 @@ OSM_MATCH_CONTAINED_MIN_TOKENS = 2
 OSM_MATCH_STAGE_GAP_M = 500
 # Lettura delle geometrie OSM: tratte per blocco (la geometria intera del GeoPackage non sta in memoria)
 OSM_MATCH_CHUNK_ROWS = 2000
-# Le linee del catalogo si spezzano in pezzi di al massimo tanti vertici per l'indice spaziale: la distanza di un punto
-# da un pezzo corto costa poco, da una linea di decine di migliaia di vertici molto
-OSM_MATCH_PIECE_VERTICES = 64
 ESITO_ABBINATO, ESITO_AMBIGUO, ESITO_SOLO_GEOMETRIA, ESITO_NESSUNO = "abbinato", "ambiguo", "solo geometria", "nessuno"
+# Con tracce, nome simile e quota sufficiente ma non e' il cammino: la relazione ne copre un tratto (parziale) o lo
+# contiene (contenitore). Solo l'esito abbinato e' usato dagli altri passi (geometrie OSM, etichette)
+ESITO_PARZIALE, ESITO_CONTENITORE = "parziale", "contenitore"
+# pellegrinaggio_osm di un abbinamento: si, no (una relazione dichiara di no) o questo valore (nessuna relazione dice nulla)
+OSM_MATCH_PILGRIMAGE_SILENT = "non indicato"
 OSM_MATCH_FIELDS = (
     "cammino_id", "fonte", "nome", "stato_geometria", "esito", "osm_ids", "n_relazioni", "punteggio_nome",
     "quota_catalogo_in_osm", "quota_osm_in_catalogo", "lunghezza_osm_m", "lunghezza_catalogo_m",
@@ -572,6 +661,9 @@ OSM_MATCH_GEOMETRY_FIELDS = ("cammino_id", "osm_ids")
 # --- Calibrazione della distanza d ---
 CALIBRATION_DIR = INTERIM_DIR / "calibrazione"
 CALIBRATION_DISTANCES_M = (0, 25, 50, 100, 200, 400, 800)
+# Tipi di tratta della calibrazione: i numeri pubblicati (d scelta) sono stati misurati senza le tracce per bici,
+# che sono entrate nel cammino solo dopo (CROSSING_TIPI). Non si allarga: riprodurrebbe numeri diversi
+CALIBRATION_TIPI = (TIPO_TAPPA, TIPO_VARIANTE, TIPO_ALTRO)
 CALIBRATION_PERCENTILES = (50, 90, 95, 99)
 CALIBRATION_FAR_M = 400  # le coppie di riferimento oltre questa distanza vanno in un elenco da ispezionare
 CALIBRATION_GRAZING_M = (50, 100)  # lunghezza dentro il comune sotto la quale la linea "sfiora" soltanto
@@ -625,3 +717,140 @@ CALIBRATION_FILES_A = {
 CALIBRATION_FILES_B = {"dettaglio": "B_dettaglio.csv", "totale": "B_totale.csv"}
 CALIBRATION_FILES_C = {"coppie": "C_coppie.csv", "dettaglio": "C_dettaglio.csv"}
 CALIBRATION_FILES_D = {"costi": "D_costi.csv", "grazing": "D_grazing.csv"}
+
+# --- Cartella di lavoro (workbook.py) ---
+# Ingressi: i due file del contratto P5 (PAIRS_DIR e PAIRS_FILES). Uscita: un file per giorno di elaborazione
+WORKBOOK_OUTPUT_DIR = DATA_DIR / "output"
+WORKBOOK_FILE_TEMPLATE = "cammini_comuni_{data}.xlsx"  # {data} = data di elaborazione, AAAA-MM-GG
+WORKBOOK_SHEET_COMUNI, WORKBOOK_SHEET_CAMMINI = "Comuni", "Cammini"
+WORKBOOK_SHEET_COPPIE, WORKBOOK_SHEET_NOTE = "Coppie", "Note"
+# Colonne attese nei due file: quelle del contratto, definite una volta sola nella sezione Coppie
+WORKBOOK_COPPIE_FIELDS = PAIRS_COPPIE_FIELDS
+WORKBOOK_TAG_FIELDS = PAIRS_MULTI_FIELDS
+WORKBOOK_CAMMINI_FIELDS = PAIRS_CAMMINI_FIELDS
+# Colonne di ogni foglio (chiave -> intestazione in WORKBOOK_HEADERS)
+WORKBOOK_COMUNI_KEYS = (
+    "cod_reg", "regione", "cod_uts", "provincia", "sigla", "PRO_COM_T", "comune",
+    "mezzo", "religioso", "n_cammini", "cammini",
+)
+WORKBOOK_COPPIE_KEYS = (*WORKBOOK_COPPIE_FIELDS, *WORKBOOK_TAG_FIELDS)
+WORKBOOK_HEADERS = {
+    "cod_reg": "Codice regione", "regione": "Regione", "cod_uts": "Codice provincia", "provincia": "Provincia",
+    "sigla": "Sigla", "PRO_COM_T": "Codice comune", "comune": "Comune", "mezzo": "Mezzo",
+    "religioso": "Religioso", "n_cammini": "Numero cammini", "cammini": "Cammini",
+    "cammino_unico_id": "Codice cammino", "nome": "Cammino", "alias": "Altri nomi", "fonti": "Fonti",
+    "membri": "Codici nelle fonti", "evidenza_religioso": "Indicazione del carattere religioso",
+    "tipologia": "Tipologia", "portata": "Portata", "tema": "Tema", "stagione": "Stagione",
+    "credenziale": "Credenziale", "segnaletica": "Segnaletica", "data_catalogo": "Data nel catalogo",
+    "regioni": "Regioni", "lunghezza_dichiarata_km": "Lunghezza dichiarata (km)",
+    "lunghezza_tracciata_km": "Lunghezza del tracciato (km)", "copertura": "Copertura del tracciato",
+    "fonte_geometria": "Fonte del tracciato", "nota": "Nota", "n_comuni": "Numero comuni",
+    "ordine": "Ordine lungo il cammino", "distanza_m": "Distanza dal comune (m)", "dentro": "Dentro il comune",
+}
+WORKBOOK_RAGGED_HEADER = "Comune {numero}"  # colonne dei comuni del foglio Cammini, nell'ordine del percorso
+WORKBOOK_RAGGED_FORMAT = "{comune} ({sigla})"  # esistono comuni omonimi in province diverse
+# Codici ISTAT scritti come testo, con gli zeri iniziali: cifre per chiave
+WORKBOOK_CODE_DIGITS = {"cod_reg": 2, "cod_uts": 3, "PRO_COM_T": 6}
+WORKBOOK_INT_KEYS = ("ordine", "n_comuni")
+WORKBOOK_FLOAT_KEYS = ("distanza_m", "lunghezza_dichiarata_km", "lunghezza_tracciata_km", "copertura")
+WORKBOOK_BOOL_KEY = "dentro"
+WORKBOOK_ENUM_KEYS = ("mezzo", "religioso")  # ammessi solo i valori di WORKBOOK_VALUE_LABELS
+WORKBOOK_TRUE_VALUES, WORKBOOK_FALSE_VALUES = ("true", "1", "si"), ("false", "0", "no")
+# Colonne con piu' valori uniti da LIST_SEPARATOR nei dati intermedi: nel foglio sono separati da WORKBOOK_CELL_SEPARATOR
+WORKBOOK_LIST_KEYS = (
+    "alias", "fonti", "membri", "regioni", "fonte_geometria", "evidenza_religioso", *WORKBOOK_TAG_FIELDS,
+)
+WORKBOOK_CELL_SEPARATOR = "; "
+# Valori scritti come slug nei dati ("arte-e-cultura"): nel foglio si leggono come parole
+WORKBOOK_WORD_KEYS = ("tema",)
+# Date ISO nei dati intermedi: nel foglio una data sola e' una data di Excel con questo formato, piu' date sono testo
+WORKBOOK_DATE_KEYS = ("data_catalogo",)
+WORKBOOK_DATE_NUMBER_FORMAT = "DD/MM/YYYY"
+WORKBOOK_SLUG_SEPARATOR = "-"
+# Etichette di visualizzazione; l'ordine dei dizionari e' l'ordine delle righe di dettaglio del foglio Comuni
+WORKBOOK_MEZZO_LABELS = {MEZZO_PIEDI: "A piedi", MEZZO_BICI: "In bici", MEZZO_ENTRAMBI: "A piedi e in bici"}
+WORKBOOK_SI_NO_LABELS = {SI: "Sì", NO: "No"}
+WORKBOOK_ALL_LABEL = "Tutti"  # Mezzo e Religioso della riga di totale di un comune
+WORKBOOK_VALUE_LABELS = {
+    "mezzo": WORKBOOK_MEZZO_LABELS,
+    "religioso": WORKBOOK_SI_NO_LABELS,
+    "fonti": {
+        CDI_FONTE: "camminiditalia.org", MITUR_FONTE: "Catalogo dei cammini religiosi del Ministero del Turismo",
+        OSM_FONTE: "OpenStreetMap",
+    },
+    "fonte_geometria": {
+        FONTE_GEOMETRIA_CATALOGO: "Catalogo", FONTE_GEOMETRIA_OSM: "OpenStreetMap",
+        FONTE_GEOMETRIA_CATALOGO_OSM: "Catalogo e OpenStreetMap", FONTE_GEOMETRIA_NESSUNA: "Nessuna",
+    },
+    "credenziale": WORKBOOK_SI_NO_LABELS,
+    "segnaletica": WORKBOOK_SI_NO_LABELS,
+}
+# Registro delle richieste (REQUESTS_LOG): le richieste riuscite di ogni fonte danno la data di scarico del foglio Note.
+# Chiave = segnaposto nelle righe di WORKBOOK_NOTE_SECTIONS, valore = host del registro (HOST_*) di quella fonte
+WORKBOOK_SOURCE_HOSTS = {
+    "data_cdi": (HOST_CDI, HOST_MAPHUB, HOST_S3), "data_mitur": (HOST_MITUR,),
+    "data_osm": (HOST_GEOFABRIK,), "data_istat": (HOST_ISTAT,),
+}
+WORKBOOK_LOG_OK_STATUS = "200"
+WORKBOOK_DOWNLOAD_ONE, WORKBOOK_DOWNLOAD_RANGE = "il {first}", "dal {first} al {last}"
+WORKBOOK_DOWNLOAD_MISSING = "in data non registrata"
+# Righe di dettaglio di un comune sotto il totale: riassunte con lo schema a righe di Excel, chiuse all'apertura
+WORKBOOK_OUTLINE_LEVEL = 1
+WORKBOOK_FREEZE_CELL = "A2"  # sotto la riga di intestazione
+WORKBOOK_WIDTH_MIN, WORKBOOK_WIDTH_MAX, WORKBOOK_WIDTH_PADDING = 8, 60, 2
+WORKBOOK_NOTE_WIDTH = 120
+WORKBOOK_DATE_DISPLAY_FORMAT = "%d/%m/%Y"
+# Foglio Note: (titolo della sezione, righe). I segnaposto {distanza_m}, {anno_istat}, {data} si riempiono dai parametri;
+# {data_cdi}, {data_mitur}, {data_osm}, {data_istat} dal registro delle richieste (WORKBOOK_SOURCE_HOSTS)
+WORKBOOK_NOTE_SECTIONS = (
+    ("Contenuto della cartella di lavoro", (
+        "Comuni: per ogni comune una riga di totale, in grassetto, con il numero e i nomi dei cammini che lo attraversano; "
+        "sotto, le righe di dettaglio per mezzo e carattere religioso, raggruppate e chiuse (si aprono con il segno + a sinistra).",
+        "Cammini: una riga per cammino, con le sue caratteristiche e i comuni attraversati nell'ordine del percorso.",
+        "Coppie: una riga per ogni coppia cammino e comune, con i dati dell'incrocio e le caratteristiche del cammino.",
+    )),
+    ("Significato delle colonne", (
+        "Codice regione, Codice provincia, Codice comune: codici ISTAT, scritti come testo con gli zeri iniziali (2, 3 e 6 cifre).",
+        "Sigla: sigla della provincia.",
+        "Mezzo: come è pubblicato il cammino. A piedi o In bici; A piedi e in bici quando le fonti lo pubblicano in entrambi i modi. "
+        "Nel foglio Comuni e nel foglio Coppie si riferisce ai tracciati del cammino che passano vicino a quel comune. "
+        "Nella riga di totale di un comune vale Tutti.",
+        "Religioso: Sì se almeno una fonte indica il cammino come religioso (Catalogo dei cammini religiosi del Ministero del Turismo, "
+        "tema spirituale su camminiditalia.org o sulla mappa Cammini d'Italia, pellegrinaggio in OpenStreetMap) o se il nome del "
+        "cammino contiene una parola religiosa (ad esempio San, Santa, Romea), altrimenti No. Nella riga di totale di un comune vale Tutti.",
+        "Numero cammini: cammini diversi che attraversano il comune. Il totale conta ogni cammino una volta; le righe di dettaglio sommano al totale.",
+        "Cammini: nomi dei cammini in ordine alfabetico, separati da punto e virgola.",
+        "Codice cammino: identificativo del cammino in questa cartella di lavoro. Cammino: nome del cammino. "
+        "Altri nomi: nomi con cui lo stesso cammino compare nelle altre fonti.",
+        "Fonti: fonti in cui il cammino compare; un cammino presente in più fonti è contato una sola volta. "
+        "Codici nelle fonti: identificativi del cammino presso le singole fonti.",
+        "Indicazione del carattere religioso: da che cosa risulta la scelta tra Sì e No.",
+        "Tipologia, Portata, Tema, Stagione, Credenziale, Segnaletica, Data nel catalogo: informazioni pubblicate dalle fonti; "
+        "se le fonti non concordano compaiono tutti i valori.",
+        "Regioni: regioni indicate dalle fonti.",
+        "Lunghezza dichiarata (km): lunghezza pubblicata dalla fonte da cui viene il tracciato misurato. Lunghezza del tracciato (km): "
+        "lunghezza di quel tracciato, contando una volta sola le parti ripetute. "
+        "Copertura del tracciato: quota della lunghezza dichiarata coperta dal tracciato (al massimo 1), quando entrambe sono note.",
+        "Fonte del tracciato: Catalogo, OpenStreetMap, Catalogo e OpenStreetMap (quando il cammino ha tracciati del catalogo e, "
+        "per un'altra sua versione, di OpenStreetMap) o Nessuna quando del cammino non c'è un tracciato. Nota: osservazioni sul cammino.",
+        "Numero comuni: comuni attraversati dal cammino. Comune 1, Comune 2, ...: i comuni nell'ordine del percorso, con la sigla della provincia.",
+        "Ordine lungo il cammino: posizione del comune sul percorso, a partire da 1. I comuni seguono il percorso dalla partenza "
+        "all'arrivo; per i cammini con più rami seguono un ramo dopo l'altro. Per i tracciati presi da OpenStreetMap senza una "
+        "partenza pubblicata il verso non è garantito.",
+        "Distanza dal comune (m): distanza minima del tracciato dal confine del comune. "
+        "Dentro il comune: Sì se il tracciato tocca o entra nel comune, No se passa fuori ma a distanza non superiore a quella indicata sotto.",
+    )),
+    ("Parametri", (
+        "Distanza: un cammino è associato a un comune se il suo tracciato dista dal confine comunale al massimo {distanza_m} m.",
+        "Confini comunali: ISTAT, edizione al 1 gennaio {anno_istat}.",
+        "Data di elaborazione: {data}.",
+    )),
+    ("Fonti", (
+        "camminiditalia.org: elenco e tracciati dei cammini del portale Cammini d'Italia. Scaricato {data_cdi}.",
+        "Catalogo dei cammini religiosi del Ministero del Turismo: elenco e tracciati dei cammini religiosi. Scaricato {data_mitur}.",
+        "OpenStreetMap, estratto di Geofabrik: relazioni di percorso. Scaricato {data_osm}. © OpenStreetMap contributors, ODbL "
+        "(https://www.openstreetmap.org/copyright).",
+        "ISTAT, confini delle unità amministrative a fini statistici. Scaricato {data_istat}. "
+        "Licenza CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/), fonte: ISTAT.",
+    )),
+)

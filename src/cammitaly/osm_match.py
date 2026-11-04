@@ -1,16 +1,21 @@
 """Abbinamento dei cammini del catalogo (camminiditalia.org e MiTur) alle relazioni di percorso di OpenStreetMap.
 
 Regola (soglie in config, sezione "Abbinamento con OSM"; nomi e quote con le primitive di matching.py):
-- Cammino con tracce: una relazione e' abbinata se il nome e' simile (punteggio >= OSM_MATCH_NAME_MIN_SCORE) e almeno
-  OSM_MATCH_SHARE_MIN del cammino sta entro OSM_MATCH_NEAR_M dalla relazione, oppure della relazione dal cammino.
+- Cammino con tracce: sono candidate le relazioni con nome simile (punteggio >= OSM_MATCH_NAME_MIN_SCORE) e almeno
+  OSM_MATCH_SHARE_MIN del cammino entro OSM_MATCH_NEAR_M dalla relazione, oppure della relazione dal cammino. Si
+  scartano le candidate piu' lunghe del massimo dell'intervallo di lunghezza per la lunghezza di riferimento (dichiarata,
+  altrimenti quella del tracciato: un contenitore non e' il cammino), poi quelle contenute in un'altra (resta la piu'
+  esterna). L'unione delle tenute e' abbinata se entrambe le quote bastano, oppure se ne basta una e la lunghezza sta
+  nell'intervallo; altrimenti e' "parziale" (copre un tratto) o "contenitore" (contiene il cammino) e non serve ad altri.
   Nome diverso ed entrambe le quote >= OSM_MATCH_GEOMETRY_ONLY_MIN: esito "solo geometria", che non e' un abbinamento.
-- Cammino senza tracce: nome simile, almeno OSM_MATCH_REGION_SHARE_MIN della relazione nelle regioni dichiarate e, se
-  il catalogo dichiara la lunghezza, lunghezza OSM / dichiarata nell'intervallo. Le relazioni che passano si riuniscono
-  in gruppi (tappe a meno di OSM_MATCH_STAGE_GAP_M l'una dall'altra); piu' gruppi distinti che passano = ambiguo.
+- Cammino senza tracce: nome simile, almeno OSM_MATCH_REGION_SHARE_MIN della relazione nelle regioni dichiarate e,
+  se il catalogo dichiara la lunghezza, lunghezza OSM / dichiarata nello stesso intervallo. Le relazioni che passano si
+  riuniscono in gruppi (tappe a meno di OSM_MATCH_STAGE_GAP_M l'una dall'altra); piu' gruppi distinti che passano = ambiguo.
 - Annidamento: dalla relazione piu' lunga, si scarta ogni relazione che sta per almeno OSM_MATCH_NESTED_MIN dentro una
   gia' tenuta (resta la piu' esterna). Le relazioni tenute si uniscono: tappe senza la relazione madre danno l'unione.
 La geometria OSM di un cammino abbinato e' l'unione delle tratte (principale e varianti) delle relazioni tenute.
 """
+import dataclasses
 import time
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
@@ -23,7 +28,6 @@ import pandas as pd
 import psutil
 import pyogrio
 import shapely
-from shapely.geometry import LineString
 from shapely.geometry.base import BaseGeometry
 
 from cammitaly import config, crossing, dedup, matching, tags
@@ -32,56 +36,22 @@ from cammitaly.geometry import common
 Pair = tuple[str, str]  # (cammino del catalogo, relazione OSM)
 TratteReader = Callable[[Collection[str] | None], Iterable[tuple[str, BaseGeometry]]]
 NEAR = config.OSM_MATCH_NEAR_M
+NAN_SHARES = (np.nan, np.nan)
 
 
 # --- Campioni e quote ---
-
-@dataclass(frozen=True)
-class Sample:
-    """Punti equidistanti lungo una linea (coordinate) col peso in metri di ciascuno."""
-    xy: np.ndarray
-    weights: np.ndarray
-
-
-def sample_line(geom: BaseGeometry) -> Sample:
-    points, weights = matching.sample_points(geom, config.MATCH_SAMPLE_M)
-    return Sample(shapely.get_coordinates(points), weights)
-
-
-def share_of_sample(sample: Sample, other: BaseGeometry, near_m: float = NEAR) -> float:
-    """Quota del campione entro near_m da `other` (come matching.share_near, ma su punti gia' campionati).
-
-    Si interrogano solo i punti nel riquadro di `other` allargato di near_m: gli altri non possono essergli vicini.
-    """
-    min_x, min_y, max_x, max_y = other.bounds
-    x, y = sample.xy.T
-    inside = (x >= min_x - near_m) & (x <= max_x + near_m) & (y >= min_y - near_m) & (y <= max_y + near_m)
-    if not inside.any():
-        return 0.0
-    near = matching.points_near(shapely.points(sample.xy[inside]), other, near_m)
-    return float(sample.weights[inside][near].sum() / sample.weights.sum())
-
-
-def line_pieces(geom: BaseGeometry, max_vertices: int) -> list[LineString]:
-    """La linea spezzata in pezzi consecutivi di al massimo max_vertices vertici (ogni pezzo riparte dall'ultimo del precedente)."""
-    pieces = []
-    for part in shapely.get_parts(geom):
-        coords = shapely.get_coordinates(part)
-        for start in range(0, len(coords) - 1, max_vertices - 1):
-            pieces.append(LineString(coords[start:start + max_vertices]))
-    return pieces
-
 
 def osm_in_catalogue(lines: Mapping[str, BaseGeometry], relation_tratte: Iterable[tuple[str, BaseGeometry]]) -> dict[Pair, float]:
     """(cammino, relazione) -> quota della relazione entro NEAR dal cammino, per le coppie con quota positiva.
 
     Una sola passata sulle tratte OSM: i punti di ogni tratta interrogano un indice sui pezzi di tutte le linee del
-    catalogo. Le tratte della stessa relazione (principale e varianti) si sommano.
+    catalogo (invece di un confronto per coppia, che richiederebbe di rileggere le tratte per ogni cammino). Le tratte
+    della stessa relazione (principale e varianti) si sommano.
     """
     ids = list(lines)
     pieces, owners = [], []
     for code, cammino_id in enumerate(ids):
-        own = line_pieces(lines[cammino_id], config.OSM_MATCH_PIECE_VERTICES)
+        own = matching.line_pieces(lines[cammino_id], config.MATCH_PIECE_VERTICES)
         pieces.extend(own)
         owners.extend([code] * len(own))
     tree, owner_of = shapely.STRtree(pieces), np.array(owners, dtype=np.int64)
@@ -101,11 +71,12 @@ def osm_in_catalogue(lines: Mapping[str, BaseGeometry], relation_tratte: Iterabl
     return {pair: weight / total[pair[1]] for pair, weight in near_weight.items()}
 
 
-def region_share(sample: Sample, regions: Sequence[BaseGeometry]) -> float:
+def region_share(sample: matching.Sample, regions: Sequence[BaseGeometry]) -> float:
     """Quota (in lunghezza) del campione dentro l'unione delle regioni date."""
-    inside = np.zeros(len(sample.xy), dtype=bool)
+    x, y = shapely.get_coordinates(sample.points).T
+    inside = np.zeros(len(x), dtype=bool)
     for region in regions:
-        inside |= shapely.contains_xy(region, *sample.xy.T)
+        inside |= shapely.contains_xy(region, x, y)
     return float(sample.weights[inside].sum() / sample.weights.sum())
 
 
@@ -217,33 +188,61 @@ def needed_relations(
     return needed
 
 
+# --- Lunghezze ---
+
+def length_ratio(length_m: float, reference_km: float) -> float:
+    """Lunghezza / riferimento; NaN senza un riferimento positivo (un tracciato di lunghezza zero e nessuna dichiarata)."""
+    return length_m / 1000 / reference_km if reference_km > 0 else np.nan
+
+
+def length_fits(length_m: float, declared_km: float) -> bool:
+    """Con lunghezza di riferimento: rapporto nell'intervallo; senza: almeno OSM_MATCH_MIN_LENGTH_M."""
+    if np.isnan(declared_km):
+        return length_m >= config.OSM_MATCH_MIN_LENGTH_M
+    return config.OSM_MATCH_LENGTH_RATIO_MIN <= length_ratio(length_m, declared_km) <= config.OSM_MATCH_LENGTH_RATIO_MAX
+
+
 # --- Decisione ---
 
 @dataclass
 class Context:
-    """Dati condivisi dalle decisioni: geometrie delle relazioni (con i campioni calcolati una volta), quote, regioni."""
+    """Dati condivisi dalle decisioni: geometrie delle relazioni (con campioni e indici calcolati una volta), quote, regioni."""
     relations: pd.DataFrame
     geometries: Mapping[str, BaseGeometry]
     osm_in: Mapping[Pair, float]
     regions: Mapping[str, BaseGeometry]
     strong: Mapping[str, list[str]]  # cammino -> relazioni con nome diverso candidate a "solo geometria"
-    samples: dict[str, Sample] = field(default_factory=dict)
+    samples: dict[str, matching.Sample] = field(default_factory=dict)
+    indexes: dict[str, matching.LineIndex] = field(default_factory=dict)
 
-    def sample(self, relation_id: str) -> Sample:
+    def sample(self, relation_id: str) -> matching.Sample:
         if relation_id not in self.samples:
-            self.samples[relation_id] = sample_line(self.geometries[relation_id])
+            self.samples[relation_id] = matching.sample_line(self.geometries[relation_id])
         return self.samples[relation_id]
+
+    def index(self, relation_id: str) -> matching.LineIndex:
+        """L'indice spaziale della relazione, costruito una sola volta: l'annidamento la interroga per ogni altra relazione."""
+        if relation_id not in self.indexes:
+            self.indexes[relation_id] = matching.LineIndex(self.geometries[relation_id])
+        return self.indexes[relation_id]
 
     def length(self, relation_id: str) -> float:
         return float(self.geometries[relation_id].length)
 
+    def forget(self) -> None:
+        """Svuota campioni e indici: servono a un cammino alla volta (le relazioni condivise sono poche) e tenerli per
+        tutte le relazioni portava la memoria da 0,5 a 1,5 GB."""
+        self.samples.clear()
+        self.indexes.clear()
 
-@dataclass
+
+@dataclass(frozen=True)
 class Outcome:
     esito: str
     ids: list[str]
     geometry: BaseGeometry | None = None  # unione delle relazioni elencate, se l'esito ne ha una
     nota: str = ""
+    shares: tuple[float, float] = NAN_SHARES  # (catalogo in OSM, OSM nel catalogo) sull'unione, per i cammini con tracce
 
 
 def outermost(relation_ids: Iterable[str], ctx: Context) -> tuple[list[str], list[str]]:
@@ -251,7 +250,8 @@ def outermost(relation_ids: Iterable[str], ctx: Context) -> tuple[list[str], lis
     da una gia' tenuta."""
     kept, nested = [], []
     for relation_id in sorted(relation_ids, key=lambda r: (-ctx.length(r), r)):
-        inside = any(share_of_sample(ctx.sample(relation_id), ctx.geometries[k]) >= config.OSM_MATCH_NESTED_MIN for k in kept)
+        sample = ctx.sample(relation_id)
+        inside = any(matching.share_within(sample, ctx.index(k), NEAR) >= config.OSM_MATCH_NESTED_MIN for k in kept)
         (nested if inside else kept).append(relation_id)
     return kept, nested
 
@@ -263,7 +263,7 @@ def stage_groups(relation_ids: Sequence[str], ctx: Context) -> list[list[str]]:
         (a, b) for n, a in enumerate(relation_ids) for b in relation_ids[n + 1:]
         if shapely.dwithin(ctx.geometries[a], ctx.geometries[b], config.OSM_MATCH_STAGE_GAP_M)
     ]
-    return sorted((sorted(group) for group in dedup.connected_groups(edges)), key=lambda group: group[0])
+    return sorted((sorted(group) for group in matching.connected_groups(edges)), key=lambda group: group[0])
 
 
 def _ids(relation_ids: Iterable[str]) -> str:
@@ -274,37 +274,128 @@ def _ratio(value: float, decimals: int = config.RATIO_DECIMALS) -> str:
     return f"{value:.{decimals}f}"
 
 
-def match_tracked(cammino_id: str, line: BaseGeometry, names: Mapping[str, float], ctx: Context) -> Outcome:
-    """Cammino con tracce: nome simile e quota in una delle due direzioni; altrimenti solo geometria o nessuno."""
-    own = sample_line(line)
-    near = [r for r in names if (cammino_id, r) in ctx.osm_in]
-    shares = {r: (share_of_sample(own, ctx.geometries[r]), ctx.osm_in[(cammino_id, r)]) for r in near}
-    matched = [r for r, pair in shares.items() if max(pair) >= config.OSM_MATCH_SHARE_MIN]
-    geometry_only = sorted(
-        r for r in ctx.strong.get(cammino_id, [])
-        if share_of_sample(own, ctx.geometries[r]) >= config.OSM_MATCH_GEOMETRY_ONLY_MIN
+# --- Cammini con tracce ---
+
+@dataclass(frozen=True)
+class Tracked:
+    """Il cammino con tracce: linea, campione e indice costruiti una volta, e la lunghezza di riferimento."""
+    cammino_id: str
+    sample: matching.Sample
+    index: matching.LineIndex
+    reference_km: float
+    reference_label: str  # da dove viene la lunghezza di riferimento, per le note
+
+
+def track_of(cammino: Mapping[str, object], line: BaseGeometry) -> Tracked:
+    """La lunghezza di riferimento e' la dichiarata dal catalogo; se manca, quella del tracciato del catalogo."""
+    declared, line_km = float(cammino["lunghezza_dichiarata_km"]), line.length / 1000
+    reference_km, label = (declared, "dichiarata") if declared > 0 else (line_km, "del tracciato")
+    if not reference_km > 0:  # tracciato di lunghezza zero e nessuna dichiarata: vale il minimo assoluto di length_fits
+        reference_km, label = np.nan, "assente"
+    return Tracked(str(cammino["cammino_id"]), matching.sample_line(line), matching.LineIndex(line), reference_km, label)
+
+
+def measured(tracked: Tracked, ids: Sequence[str], ctx: Context) -> Outcome:
+    """Unione delle relazioni elencate con le quote misurate su di essa (esito e nota si aggiungono dopo)."""
+    geometry = union_lines([ctx.geometries[r] for r in ids])
+    # con una sola relazione l'unione e' la relazione: si riusano il suo indice e il suo campione, gia' calcolati
+    index, sample = (ctx.index(ids[0]), ctx.sample(ids[0])) if len(ids) == 1 else (geometry, matching.sample_line(geometry))
+    in_osm = matching.share_within(tracked.sample, index, NEAR)
+    in_catalogue = matching.share_within(sample, tracked.index, NEAR)
+    return Outcome("", list(ids), geometry, "", (in_osm, in_catalogue))
+
+
+def union_verdict(tracked: Tracked, union: Outcome) -> str:
+    """Abbinato se bastano entrambe le quote, oppure una e la lunghezza sta nell'intervallo. Altrimenti contenitore o
+    parziale, come in rejected_label."""
+    in_osm, in_catalogue = union.shares
+    minimum = config.OSM_MATCH_SHARE_MIN
+    if min(in_osm, in_catalogue) >= minimum:
+        return config.ESITO_ABBINATO
+    if max(in_osm, in_catalogue) >= minimum and length_fits(union.geometry.length, tracked.reference_km):
+        return config.ESITO_ABBINATO
+    return rejected_label(tracked, union)
+
+
+def rejected_label(tracked: Tracked, union: Outcome) -> str:
+    """Contenitore se il cammino sta dentro la relazione e questa e' oltre il massimo dell'intervallo di lunghezza;
+    altrimenti la relazione ne copre soltanto un tratto (parziale)."""
+    too_long = length_ratio(union.geometry.length, tracked.reference_km) > config.OSM_MATCH_LENGTH_RATIO_MAX
+    return config.ESITO_CONTENITORE if union.shares[0] >= config.OSM_MATCH_SHARE_MIN and too_long else config.ESITO_PARZIALE
+
+
+def _why_not(tracked: Tracked, union: Outcome, esito: str) -> str:
+    """Perche' l'unione non e' il cammino, con i numeri che lo mostrano."""
+    in_osm, in_catalogue = union.shares
+    ratio = length_ratio(union.geometry.length, tracked.reference_km)
+    meaning = "contiene il cammino" if esito == config.ESITO_CONTENITORE else "copre soltanto un tratto del cammino"
+    if np.isnan(ratio):
+        length = f"lunghezza OSM {union.geometry.length:.0f} m senza lunghezza di riferimento (minimo {config.OSM_MATCH_MIN_LENGTH_M} m)"
+    else:
+        length = f"lunghezza OSM / {tracked.reference_label} {ratio:.2f} (intervallo {config.OSM_MATCH_LENGTH_RATIO_MIN}-{config.OSM_MATCH_LENGTH_RATIO_MAX})"
+    return f"la relazione {meaning}: quota catalogo in OSM {_ratio(in_osm)}, OSM nel catalogo {_ratio(in_catalogue)}, {length}"
+
+
+def judge_candidates(tracked: Tracked, candidates: Sequence[str], below: int, ctx: Context) -> Outcome:
+    """Tra le candidate (nome simile e quota sufficiente): scarta le troppo lunghe, tiene le piu' esterne, giudica l'unione.
+
+    Le troppo lunghe si scartano prima dell'annidamento: un contenitore non deve nascondere la relazione giusta che
+    contiene. Se sono tutte troppo lunghe l'esito non e' mai abbinato (contenitore o parziale, come in rejected_label) e le elenca.
+    """
+    containers = [r for r in candidates if length_ratio(ctx.length(r), tracked.reference_km) > config.OSM_MATCH_LENGTH_RATIO_MAX]
+    kept, nested = outermost([r for r in candidates if r not in containers], ctx)
+    union = measured(tracked, kept or containers, ctx)
+    esito = union_verdict(tracked, union) if kept else rejected_label(tracked, union)  # tutte troppo lunghe: mai abbinato
+    note = (
+        f"relazioni con nome simile e quota sufficiente {len(candidates)}, troppo lunghe per essere questo cammino {len(containers)}, "
+        f"contenute in un'altra e scartate {len(nested)}, nome simile ma sotto la quota {below}"
     )
-    notes = []
-    if geometry_only:
-        notes.append(f"solo geometria (nome diverso): {_ids(geometry_only)}")
-    if matched:
-        kept, nested = outermost(matched, ctx)
-        below = len(near) - len(matched)
-        notes.insert(0, f"relazioni abbinate {len(matched)}, contenute in un'altra e scartate {len(nested)}, "
-                        f"nome simile ma sotto la quota {below}")
-        return Outcome(config.ESITO_ABBINATO, kept, union_lines([ctx.geometries[r] for r in kept]), "; ".join(notes))
-    if geometry_only:
-        return Outcome(config.ESITO_SOLO_GEOMETRIA, geometry_only, union_lines([ctx.geometries[r] for r in geometry_only]), "; ".join(notes))
+    if esito != config.ESITO_ABBINATO:
+        note += "; " + _why_not(tracked, union, esito)
+    return dataclasses.replace(union, esito=esito, nota=note)
+
+
+def no_candidate(near: Sequence[str], names: Mapping[str, float], shares: Mapping[str, tuple[float, float]]) -> str:
+    """Nota di un cammino con tracce senza candidate: perche' nessuna relazione ha insieme nome e tracciato."""
     if near:
         best = max(near, key=lambda r: (max(shares[r]), r))
-        notes.append(f"nome simile e vicine {len(near)}; la migliore {best}: quota catalogo in OSM "
-                     f"{_ratio(shares[best][0])}, OSM nel catalogo {_ratio(shares[best][1])}")
-    elif names:
-        notes.append(f"nome simile {len(names)}, nessuna entro {NEAR} m dal tracciato")
-    else:
-        notes.append("nessuna relazione con nome simile")
-    return Outcome(config.ESITO_NESSUNO, [], None, "; ".join(notes))
+        return (f"nome simile e vicine {len(near)}; la migliore {best}: quota catalogo in OSM "
+                f"{_ratio(shares[best][0])}, OSM nel catalogo {_ratio(shares[best][1])}")
+    if names:
+        return f"nome simile {len(names)}, nessuna entro {NEAR} m dal tracciato"
+    return "nessuna relazione con nome simile"
 
+
+def relation_shares(tracked: Tracked, names: Mapping[str, float], ctx: Context) -> dict[str, tuple[float, float]]:
+    """Per le relazioni con nome simile e vicine al tracciato: (quota del catalogo in OSM, quota di OSM nel catalogo)."""
+    near = [r for r in names if (tracked.cammino_id, r) in ctx.osm_in]
+    return {r: (matching.share_within(tracked.sample, ctx.index(r), NEAR), ctx.osm_in[(tracked.cammino_id, r)]) for r in near}
+
+
+def geometry_only_relations(tracked: Tracked, ctx: Context) -> list[str]:
+    """Relazioni con nome diverso che stanno sul cammino per almeno OSM_MATCH_GEOMETRY_ONLY_MIN."""
+    return sorted(
+        r for r in ctx.strong.get(tracked.cammino_id, [])
+        if matching.share_within(tracked.sample, ctx.index(r), NEAR) >= config.OSM_MATCH_GEOMETRY_ONLY_MIN
+    )
+
+
+def match_tracked(cammino: Mapping[str, object], line: BaseGeometry, names: Mapping[str, float], ctx: Context) -> Outcome:
+    """Cammino con tracce: nome simile e quota in una delle due direzioni, poi lunghezza e unione; altrimenti solo geometria o nessuno."""
+    tracked = track_of(cammino, line)
+    shares = relation_shares(tracked, names, ctx)
+    candidates = [r for r, pair in shares.items() if max(pair) >= config.OSM_MATCH_SHARE_MIN]
+    geometry_only = geometry_only_relations(tracked, ctx)
+    only_note = [f"solo geometria (nome diverso): {_ids(geometry_only)}"] if geometry_only else []
+    if candidates:
+        outcome = judge_candidates(tracked, candidates, len(shares) - len(candidates), ctx)
+        return dataclasses.replace(outcome, nota="; ".join([outcome.nota, *only_note]))
+    if geometry_only:
+        return dataclasses.replace(measured(tracked, geometry_only, ctx), esito=config.ESITO_SOLO_GEOMETRIA, nota=only_note[0])
+    return Outcome(config.ESITO_NESSUNO, [], None, no_candidate(list(shares), names, shares))
+
+
+# --- Cammini senza tracce ---
 
 def declared_regions(regioni: str) -> list[str]:
     """Slug delle regioni dichiarate dal catalogo (cdi le scrive come slug, MiTur come nomi)."""
@@ -321,49 +412,69 @@ def strict_name_match(key: str, other: str) -> bool:
     return contained is not None and len(contained) >= config.OSM_MATCH_CONTAINED_MIN_TOKENS
 
 
-def length_fits(length_m: float, declared_km: float) -> bool:
-    """Con lunghezza dichiarata: rapporto nell'intervallo; senza: almeno OSM_MATCH_MIN_LENGTH_M."""
-    if np.isnan(declared_km):
-        return length_m >= config.OSM_MATCH_MIN_LENGTH_M
-    return config.OSM_MATCH_LENGTH_RATIO_MIN <= length_m / 1000 / declared_km <= config.OSM_MATCH_LENGTH_RATIO_MAX
+@dataclass
+class Selection:
+    """Le relazioni candidate di un cammino senza tracce dopo i filtri su nome, regioni e annidamento (con i conteggi per la nota)."""
+    loose: int  # nome simile (punteggio)
+    strict: int = 0  # nome simile in senso stretto
+    in_regions: int = 0
+    contained_dropped: int = 0  # scartate perche' c'e' una relazione con lo stesso nome
+    kept: list[str] = field(default_factory=list)
+    nested: list[str] = field(default_factory=list)
+    nota: str = ""  # se kept e' vuota, perche'
 
 
-def match_trackless(cammino: Mapping[str, object], names: Mapping[str, float], ctx: Context) -> Outcome:
-    """Cammino senza tracce: nome simile in senso stretto, relazione nelle regioni dichiarate, gruppo di lunghezza compatibile."""
-    loose = len(names)
-    names = {r: score for r, score in names.items() if strict_name_match(str(cammino["chiave"]), ctx.relations.at[r, "chiave"])}
-    if not names:
-        return Outcome(config.ESITO_NESSUNO, [], None, f"nessuna relazione con nome simile in senso stretto (scartate {loose}: una sola parola contenuta o nome solo somigliante)")
+def _same_name_first(key: str, passing: list[str], ctx: Context) -> tuple[list[str], int]:
+    """Con una relazione dallo stesso nome nelle regioni, quelle che contengono soltanto il nome (tappe di altri cammini
+    che attraversano un luogo omonimo, "San Pellegrino in Alpe") non si aggiungono. Ritorna (relazioni, scartate)."""
+    exact = [r for r in passing if set(key.split()) == set(ctx.relations.at[r, "chiave"].split())]
+    return (exact, len(passing) - len(exact)) if exact else (passing, 0)
+
+
+def select_trackless(cammino: Mapping[str, object], names: Mapping[str, float], ctx: Context) -> Selection:
+    """Nome simile in senso stretto, relazione nelle regioni dichiarate, la piu' esterna tra quelle con lo stesso nome."""
+    key, loose = str(cammino["chiave"]), len(names)
+    strict = [r for r in names if strict_name_match(key, ctx.relations.at[r, "chiave"])]
+    if not strict:
+        return Selection(loose, nota=f"nessuna relazione con nome simile in senso stretto (scartate {loose}: una sola parola contenuta o nome solo somigliante)")
     regions = [ctx.regions[slug] for slug in declared_regions(str(cammino["regioni"]))]
     if not regions:
-        return Outcome(config.ESITO_NESSUNO, [], None, f"nome simile {len(names)}; regioni non dichiarate, controllo impossibile")
-    shares = {r: region_share(ctx.sample(r), regions) for r in names}
-    passing = [r for r in names if shares[r] >= config.OSM_MATCH_REGION_SHARE_MIN]
+        return Selection(loose, len(strict), nota=f"nome simile {len(strict)}; regioni non dichiarate, controllo impossibile")
+    shares = {r: region_share(ctx.sample(r), regions) for r in strict}
+    passing = [r for r in strict if shares[r] >= config.OSM_MATCH_REGION_SHARE_MIN]
     if not passing:
-        best = max(names, key=lambda r: (shares[r], r))
-        return Outcome(config.ESITO_NESSUNO, [], None, (
-            f"nome simile {len(names)}, nessuna nelle regioni dichiarate (la migliore {best}: quota {_ratio(shares[best])})"
+        best = max(strict, key=lambda r: (shares[r], r))
+        return Selection(loose, len(strict), nota=(
+            f"nome simile {len(strict)}, nessuna nelle regioni dichiarate (la migliore {best}: quota {_ratio(shares[best])})"
         ))
-    # Con una relazione dallo stesso nome nelle regioni, quelle che contengono soltanto il nome (tappe di altri
-    # cammini che attraversano un luogo omonimo, "San Pellegrino in Alpe") non si aggiungono
-    exact = [r for r in passing if set(str(cammino["chiave"]).split()) == set(ctx.relations.at[r, "chiave"].split())]
-    contained_dropped = len(passing) - len(exact) if exact else 0
-    kept, nested = outermost(exact or passing, ctx)
-    groups = stage_groups(kept, ctx)
-    unions = {tuple(group): union_lines([ctx.geometries[r] for r in group]) for group in groups}
-    declared = float(cammino["lunghezza_dichiarata_km"])
-    ratios = {group: geom.length / 1000 / declared for group, geom in unions.items()}
-    fitting = [group for group in unions if length_fits(unions[group].length, declared)]
-    notes = [
-        f"nome simile {len(names)} (scartate in senso stretto {loose - len(names)}), nelle regioni {len(passing)}, scartate perche' c'e' lo stesso nome {contained_dropped}, "
-        f"contenute in un'altra e scartate {len(nested)}, "
-        f"gruppi {len(groups)}"
-    ]
+    candidates, dropped = _same_name_first(key, passing, ctx)
+    kept, nested = outermost(candidates, ctx)
+    return Selection(loose, len(strict), len(passing), dropped, kept, nested)
+
+
+def _rejected_note(unions: Mapping[tuple[str, ...], BaseGeometry], fitting: Sequence[tuple[str, ...]], declared: float) -> list[str]:
+    """Nota dei gruppi la cui lunghezza non sta nell'intervallo (o e' sotto il minimo, senza lunghezza dichiarata)."""
     rejected = [group for group in unions if group not in fitting]
     if rejected and np.isnan(declared):
-        notes.append(f"piu' corte di {config.OSM_MATCH_MIN_LENGTH_M} m: " + ", ".join(f"{_ids(g)} {unions[g].length:.0f} m" for g in rejected))
-    elif rejected:
-        notes.append("lunghezza / dichiarata fuori intervallo: " + ", ".join(f"{_ids(g)} {ratios[g]:.2f}" for g in rejected))
+        return [f"piu' corte di {config.OSM_MATCH_MIN_LENGTH_M} m: " + ", ".join(f"{_ids(g)} {unions[g].length:.0f} m" for g in rejected)]
+    if rejected:
+        return ["lunghezza / dichiarata fuori intervallo: " + ", ".join(f"{_ids(g)} {length_ratio(unions[g].length, declared):.2f}" for g in rejected)]
+    return []
+
+
+def decide_groups(cammino: Mapping[str, object], selection: Selection, ctx: Context) -> Outcome:
+    """Le relazioni tenute si riuniscono in gruppi di tappe; abbinato se un solo gruppo ha la lunghezza giusta, ambiguo se piu' d'uno."""
+    groups = stage_groups(selection.kept, ctx)
+    unions = {tuple(group): union_lines([ctx.geometries[r] for r in group]) for group in groups}
+    declared = float(cammino["lunghezza_dichiarata_km"])
+    fitting = [group for group in unions if length_fits(unions[group].length, declared)]
+    notes = [
+        f"nome simile {selection.strict} (scartate in senso stretto {selection.loose - selection.strict}), nelle regioni {selection.in_regions}, "
+        f"scartate perche' c'e' lo stesso nome {selection.contained_dropped}, "
+        f"contenute in un'altra e scartate {len(selection.nested)}, "
+        f"gruppi {len(groups)}",
+        *_rejected_note(unions, fitting, declared),
+    ]
     if not fitting:
         return Outcome(config.ESITO_NESSUNO, [], None, "; ".join(notes))
     if len(fitting) == 1:
@@ -372,10 +483,27 @@ def match_trackless(cammino: Mapping[str, object], names: Mapping[str, float], c
     return Outcome(config.ESITO_AMBIGUO, [r for group in fitting for r in group], None, "; ".join(notes))
 
 
+def match_trackless(cammino: Mapping[str, object], names: Mapping[str, float], ctx: Context) -> Outcome:
+    """Cammino senza tracce: sceglie le relazioni candidate (nome, regioni, annidamento), poi decide sui gruppi e sulla lunghezza."""
+    selection = select_trackless(cammino, names, ctx)
+    if not selection.kept:
+        return Outcome(config.ESITO_NESSUNO, [], None, selection.nota)
+    return decide_groups(cammino, selection, ctx)
+
+
 # --- Uscite ---
 
 def _rounded(value: float, decimals: int) -> float:
     return round(value, decimals) if pd.notna(value) else np.nan
+
+
+def pilgrimage_flag(values: Iterable[str]) -> str:
+    """Pellegrinaggio dalle relazioni abbinate: si se una e' si, no se almeno una dice di no; se nessuna dice nulla
+    "non indicato" (il silenzio non e' un no). Il valore di ogni relazione e' quello di tags.religioso_osm."""
+    raw = list(values)
+    if tags.combine_religioso(tags.religioso_osm(value)[0] for value in raw) == config.SI:
+        return config.SI
+    return config.NO if any(raw) else config.OSM_MATCH_PILGRIMAGE_SILENT
 
 
 def outcome_row(
@@ -387,15 +515,14 @@ def outcome_row(
     score = max((matching.name_score(key, ctx.relations.at[r, "chiave"]) for r in outcome.ids), default=best_score)
     declared = float(cammino["lunghezza_dichiarata_km"])
     osm_length = geom.length if geom is not None else np.nan
-    in_osm = in_catalogue = in_regions = np.nan
-    if geom is not None and line is not None:
-        in_osm, in_catalogue = share_of_sample(sample_line(line), geom), share_of_sample(sample_line(geom), line)
-    elif geom is not None:
+    in_osm, in_catalogue = outcome.shares
+    in_regions = np.nan
+    if geom is not None and line is None:
         regions = [ctx.regions[slug] for slug in declared_regions(str(cammino["regioni"]))]
-        in_regions = region_share(sample_line(geom), regions)
+        in_regions = region_share(matching.sample_line(geom), regions)
     pilgrimage = ""
     if outcome.esito == config.ESITO_ABBINATO:
-        pilgrimage = tags.combine_religioso(tags.religioso_osm(ctx.relations.at[r, "pilgrimage"])[0] for r in outcome.ids)
+        pilgrimage = pilgrimage_flag(ctx.relations.at[r, "pilgrimage"] for r in outcome.ids)
     return {
         "cammino_id": cammino["cammino_id"], "fonte": cammino["fonte"], "nome": cammino["nome"],
         "stato_geometria": cammino["stato_geometria"], "esito": outcome.esito, "osm_ids": _ids(outcome.ids),
@@ -439,10 +566,11 @@ def build_outputs(
     for cammino in catalogue.to_dict("records"):
         cammino_id, line = cammino["cammino_id"], lines.get(cammino["cammino_id"])
         if line is not None:
-            outcome = match_tracked(cammino_id, line, names[cammino_id], ctx)
+            outcome = match_tracked(cammino, line, names[cammino_id], ctx)
         else:
             outcome = match_trackless(cammino, names[cammino_id], ctx)
         rows.append(outcome_row(cammino, line, outcome, best[cammino_id], ctx))
+        ctx.forget()
         if outcome.esito == config.ESITO_ABBINATO:
             multi = shapely.MultiLineString(list(shapely.get_parts(outcome.geometry)))
             matched.append({"cammino_id": cammino_id, "osm_ids": _ids(outcome.ids), "geometry": multi})

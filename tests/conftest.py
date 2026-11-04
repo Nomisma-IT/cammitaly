@@ -44,6 +44,7 @@ def isolated_http(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setitem(config.HOSTS, config.HOST_CDI, config.HostPolicy(0.0, 6))
     monkeypatch.setattr(http, "_last_request_at", {})
     monkeypatch.setattr(http, "_request_count", {})
+    monkeypatch.setattr(http, "_request_cap", {})
     requested: list[str] = []
 
     def fail_on_network(request: object, timeout: float) -> FakeResponse:

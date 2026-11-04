@@ -118,3 +118,66 @@ def test_quota_con_una_linea_a_piu_parti_e_con_soglia_variabile() -> None:
     probe = horizontal(0, 4000)
     assert matching.share_near(probe, reference, NEAR, STEP) == pytest.approx(0.525, abs=0.01)  # 2 x (1000 + 50) m su 4000
     assert matching.share_near(probe, reference, 1000, STEP) == pytest.approx(1.0)
+
+
+# --- una sola misura della quota: campione, indice, distanze ---
+
+def test_indice_della_linea_da_lo_stesso_risultato_di_points_near_e_si_riusa() -> None:
+    line = horizontal(0, 1000)
+    points = shapely.points([(500, 0), (500, 50), (500, 51), (-30, 40), (2000, 0), (-51, 0)])
+    index = matching.LineIndex(line)
+    assert index.near(points, 50).tolist() == matching.points_near(points, line, 50).tolist() == [True, True, False, True, False, False]
+    assert matching.points_near(points, index, 50).tolist() == index.near(points, 50).tolist()
+    assert index.near(points, 900).tolist() == [True, True, True, True, False, True]  # lo stesso indice con un'altra distanza
+    assert index.near(points[:0], 50).tolist() == []
+
+
+def test_quota_del_campione_con_piu_distanze_coincide_con_share_near_a_ciascuna() -> None:
+    line, other = horizontal(0, 5000), horizontal(1000, 4000, y=70)
+    sample = matching.sample_line(line)
+    nears = (100, 60, 25)
+    shares = matching.shares_within(sample, other, nears)
+    assert shares == [matching.share_near(line, other, near, STEP) for near in nears]
+    assert shares[0] > 0.5 > shares[1] == shares[2] == 0.0  # a 70 m: dentro solo alla distanza maggiore
+    assert matching.share_within(sample, matching.LineIndex(other), 100) == shares[0]
+
+
+def test_le_distanze_della_quota_devono_essere_decrescenti() -> None:
+    sample = matching.sample_line(horizontal(0, 1000))
+    with pytest.raises(ValueError, match="decrescente"):
+        matching.shares_within(sample, horizontal(0, 1000), (25, 50))
+
+
+def test_quota_senza_punti_vicini_e_zero_anche_con_linea_lontana_dal_riquadro() -> None:
+    sample = matching.sample_line(horizontal(0, 1000))
+    assert matching.share_within(sample, horizontal(0, 1000, y=1_000_000), 50) == 0.0
+
+
+def test_componenti_connesse_dagli_archi() -> None:
+    groups = matching.connected_groups([("a", "b"), ("b", "c"), ("x", "y")])
+    assert sorted(sorted(group) for group in groups) == [["a", "b", "c"], ["x", "y"]]
+    assert matching.connected_groups([]) == []
+    assert matching.connected_groups([("s", "s")]) == [["s"]]  # un nodo con un arco su se' stesso e' un gruppo
+
+
+def test_pezzi_della_linea_coprono_la_linea_con_al_massimo_n_vertici() -> None:
+    coords = [(x * 100.0, (x % 3) * 10.0) for x in range(50)]
+    line = MultiLineString([coords, [(0, 5000), (100, 5000)]])
+    pieces = matching.line_pieces(line, 8)
+    assert all(len(piece.coords) <= 8 for piece in pieces)
+    assert sum(piece.length for piece in pieces) == pytest.approx(line.length)
+    assert shapely.union_all(pieces).equals(shapely.union_all(line))
+
+
+def test_indice_sui_pezzi_coincide_con_la_distanza_esatta_su_linee_casuali(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pezzi di 4 vertici: molti giunti. Il risultato per ogni punto e' quello di shapely.distance <= near."""
+    monkeypatch.setattr(config, "MATCH_PIECE_VERTICES", 4)
+    rng = np.random.default_rng(1)
+    for trial in range(12):
+        coords = np.cumsum(rng.normal(0, 80, size=(int(rng.integers(2, 120)), 2)), axis=0)
+        parts = [LineString(coords)] + ([LineString(coords[::-1] + 500)] if trial % 3 == 0 else [])
+        geom = parts[0] if len(parts) == 1 else MultiLineString(parts)
+        index = matching.LineIndex(geom)
+        points = shapely.points(rng.uniform(coords.min() - 300, coords.max() + 300, size=(500, 2)))
+        for near in (25, 50, 100):
+            assert (index.near(points, near) == (shapely.distance(points, geom) <= near)).all()

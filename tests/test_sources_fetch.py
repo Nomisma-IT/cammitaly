@@ -24,6 +24,65 @@ def test_istat_note_uses_cached_file_date_not_today(tmp_path: Path, monkeypatch:
     assert f"sha256: {hashlib.sha256(b'zip').hexdigest()}" in note
 
 
+def _istat_zip_link(year: str) -> str:
+    return f'<a href="https://www.istat.it/x/non_generalizzati/{year}/Limiti0101{year}.zip">zip</a>'
+
+
+@pytest.fixture
+def istat_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(config, "ISTAT_RAW_DIR", tmp_path)
+    monkeypatch.setattr(config, "ISTAT_INDEX_FILE", tmp_path / "indice.html")
+    monkeypatch.setattr(config, "ISTAT_EXTRACT_DIR", tmp_path / "estratto")
+    monkeypatch.setattr(config, "ISTAT_SOURCE_FILE", tmp_path / "SOURCE.txt")
+    monkeypatch.setattr(config, "ISTAT_EDITION_YEAR", "2027")
+    monkeypatch.setattr(config, "ISTAT_COMUNI_SHP", tmp_path / "estratto" / "Com01012027" / "c.shp")
+    monkeypatch.setitem(config.HOSTS, config.HOST_ISTAT, config.HostPolicy(0.0, 5))
+    return tmp_path
+
+
+def _zip_bytes(member: str) -> bytes:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(member, b"x")
+    return buffer.getvalue()
+
+
+def test_istat_stale_cached_index_is_refreshed_and_new_year_is_extracted(
+    istat_files: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (istat_files / "indice.html").write_text(_istat_zip_link("2026"), encoding="utf-8")
+    (istat_files / "estratto" / "Com01012026").mkdir(parents=True)  # estratto dell'anno precedente
+    zip_url = "https://www.istat.it/x/non_generalizzati/2027/Limiti01012027.zip"
+    requested: list[str] = []
+
+    def fake_open(request: object, timeout: float) -> FakeResponse:
+        url = request.full_url  # type: ignore[attr-defined]
+        requested.append(url)
+        return FakeResponse(_zip_bytes("Com01012027/c.shp") if url == zip_url else _istat_zip_link("2027").encode())
+
+    monkeypatch.setattr(http, "_open", fake_open)
+    istat.run()
+    assert requested == [config.ISTAT_INDEX_URL, zip_url]
+    assert (istat_files / "estratto" / "Com01012027" / "c.shp").exists()
+
+
+def test_istat_missing_edition_names_the_remedy(istat_files: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _serve_by_url(monkeypatch, {config.ISTAT_INDEX_URL: _istat_zip_link("2026").encode()})
+    with pytest.raises(http.FetchError, match="fissare CAMMITALY_ISTAT_YEAR all'anno precedente"):
+        istat.run()
+
+
+def test_istat_current_cached_index_makes_no_index_request(istat_files: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (istat_files / "indice.html").write_text(_istat_zip_link("2027"), encoding="utf-8")
+    zip_url = "https://www.istat.it/x/non_generalizzati/2027/Limiti01012027.zip"
+    _serve_by_url(monkeypatch, {zip_url: _zip_bytes("Com01012027/c.shp")})
+    istat.run()  # un indice richiesto solleverebbe KeyError nel finto server
+    assert (istat_files / "estratto" / "Com01012027" / "c.shp").exists()
+
+
 @pytest.fixture
 def osm_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(config, "OSM_RAW_DIR", tmp_path)

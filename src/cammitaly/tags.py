@@ -134,8 +134,11 @@ def religioso_cdi(tema: Iterable[str], layer_themes: Iterable[str]) -> Label:
 def religioso_osm(pilgrimage: str) -> Label:
     if not pilgrimage:
         return config.NO, config.EVIDENZA_SILENTE
-    value = config.NO if pilgrimage in config.OSM_PILGRIMAGE_NEGATIVE else config.SI
-    return value, config.EVIDENZA_PILGRIMAGE.format(pilgrimage)
+    if pilgrimage in config.OSM_PILGRIMAGE_NEGATIVE:
+        return config.NO, config.EVIDENZA_PILGRIMAGE_NEGATIVO.format(pilgrimage)
+    if pilgrimage == config.OSM_PILGRIMAGE_YES:
+        return config.SI, config.EVIDENZA_PILGRIMAGE
+    return config.SI, config.EVIDENZA_PILGRIMAGE_NOMINATO.format(pilgrimage)
 
 
 # --- attributi extra ---
@@ -193,17 +196,13 @@ def religious_words(name: str) -> list[str]:
     return sorted(set(RELIGIOUS_WORDS.findall(common.normalize_name(name))))
 
 
-def religious_check_rows(cammini: Iterable[Mapping[str, str]]) -> list[dict[str, str]]:
-    """Cammini etichettati 'no' il cui nome contiene una parola religiosa; 'cammini' porta anche 'nome'."""
-    rows = []
-    for cammino in cammini:
-        words = religious_words(cammino["nome"]) if cammino["religioso"] == config.NO else []
-        if words:
-            rows.append({
-                "cammino_id": cammino["cammino_id"], "fonte": cammino["fonte"], "nome": cammino["nome"],
-                "parole": config.LIST_SEPARATOR.join(words),
-            })
-    return rows
+def religioso_by_name(label: Label, name: str) -> Label:
+    """Cammino del catalogo (cdi, mitur): se nessuna fonte dice si, una parola religiosa nel nome vale si."""
+    words = religious_words(name) if label[0] == config.NO else []
+    if not words:
+        return label
+    template = config.EVIDENZA_NOME_PAROLE if len(words) > 1 else config.EVIDENZA_NOME_PAROLA
+    return config.SI, template.format(", ".join(f"«{word}»" for word in words))
 
 
 # --- lettura dei dati ---
@@ -314,14 +313,14 @@ def _cdi_cammini(mezzi: Mapping[str, str]) -> list[dict[str, str]]:
         if scheda["webmapp_layer"] and layer is None:  # senza strato (campo vuoto) e' normale; con uno inesistente no
             raise TagError(f"cammino {cammino['cammino_id']}: lo strato Webmapp {scheda['webmapp_layer']} non esiste")
         tema = scheda["tema"].split(config.LIST_SEPARATOR)
-        religioso = religioso_cdi(tema, _values(layer_attributes(layer).get("themes")))
+        religioso = religioso_by_name(religioso_cdi(tema, _values(layer_attributes(layer).get("themes"))), cammino["nome"])
         rows.append(_cammino_row(cammino, mezzi[cammino["cammino_id"]], religioso, cdi_extras(scheda, layer)))
     return rows
 
 
 def _mitur_cammini(mezzi: Mapping[str, str]) -> list[dict[str, str]]:
     cards = {row["slug"]: row for row in common.read_csv(config.MITUR_CAMMINI_CSV)}
-    religioso = (config.SI, config.EVIDENZA_CATALOGO_RELIGIOSO)  # il catalogo e' dei cammini religiosi
+    religioso = (config.SI, config.EVIDENZA_CATALOGO_RELIGIOSO)  # il catalogo e' dei cammini religiosi: il nome non conta
     rows = []
     for cammino in _cammini(config.MITUR_FONTE):
         card = cards.get(cammino["cammino_id"].removeprefix(config.MITUR_ID_PREFIX))
@@ -357,13 +356,10 @@ def run() -> None:
     osm = _cammini(config.OSM_FONTE)
     tratte = label_tratte(osm)
     cammini = label_cammini(tratte, osm)
-    check = religious_check_rows(cammini)
     n_tratte = files.write_csv(config.TAGS_TRATTE_CSV, config.TAGS_TRATTE_FIELDS, tratte)
     projected = ({key: row[key] for key in config.TAGS_CAMMINI_FIELDS} for row in cammini)
     n_cammini = files.write_csv(config.TAGS_CAMMINI_CSV, config.TAGS_CAMMINI_FIELDS, projected)
-    n_check = files.write_csv(config.TAGS_CHECK_CSV, config.TAGS_CHECK_FIELDS, check)
     _summary("mezzo delle tratte", tratte, "mezzo")
     _summary("mezzo dei cammini", cammini, "mezzo")
     _summary("religioso dei cammini", cammini, "religioso")
-    print("tag: da controllare (religioso no, nome religioso): " + str(dict(Counter(row["fonte"] for row in check))))
-    print(f"tag: {n_tratte} tratte, {n_cammini} cammini, {n_check} da controllare in {config.INTERIM_DIR}")
+    print(f"tag: {n_tratte} tratte, {n_cammini} cammini in {config.INTERIM_DIR}")

@@ -159,7 +159,9 @@ def test_religioso_osm(pilgrimage: str, expected: str) -> None:
 
 def test_religioso_osm_evidence() -> None:
     assert tags.religioso_osm("") == ("no", config.EVIDENZA_SILENTE)
-    assert tags.religioso_osm("no") == ("no", "pilgrimage=no")
+    assert tags.religioso_osm("no") == ("no", "OpenStreetMap: indicato come non di pellegrinaggio (pilgrimage=no)")
+    assert tags.religioso_osm("yes") == ("si", "OpenStreetMap: indicato come pellegrinaggio")
+    assert tags.religioso_osm("Via di Francesco") == ("si", "OpenStreetMap: indicato come pellegrinaggio (Via di Francesco)")
 
 
 # --- attributi extra ---
@@ -204,7 +206,7 @@ def test_mitur_extras_from_service_icons() -> None:
     assert tags.mitur_extras({"servizi": "", "in_catalogo_dal": ""})["credenziale"] == "no"
 
 
-# --- lista di controllo ---
+# --- parole religiose e regola del nome ---
 
 def test_religious_words_match_whole_words_and_prefixes() -> None:
     assert tags.religious_words("Cammino dei Santuari del Mare") == ["santuari"]
@@ -226,15 +228,33 @@ def test_added_religious_words(name: str, words: list[str]) -> None:
     assert tags.religious_words(name) == words
 
 
-def test_check_list_has_only_religioso_no_with_a_religious_name() -> None:
-    cammini = [
-        {"cammino_id": "a", "fonte": "cdi", "nome": "Cammino di San Tommaso", "religioso": "no"},
-        {"cammino_id": "b", "fonte": "cdi", "nome": "Cammino di San Tommaso", "religioso": "si"},
-        {"cammino_id": "c", "fonte": "osm", "nome": "Anello del Lago", "religioso": "no"},
-    ]
-    assert tags.religious_check_rows(cammini) == [
-        {"cammino_id": "a", "fonte": "cdi", "nome": "Cammino di San Tommaso", "parole": "san"},
-    ]
+def test_name_rule_fires_without_other_evidence() -> None:
+    silent = tags.religioso_cdi(["storico"], [])
+    assert tags.religioso_by_name(silent, "Cammino di San Tommaso") == ("si", "il nome contiene la parola «san»")
+    assert tags.religioso_by_name(silent, "Via Francesco e Frati") == ("si", "il nome contiene le parole «francesco», «frati»")
+    assert tags.religioso_by_name(silent, "Anello del Lago") == silent
+
+
+def test_name_rule_keeps_a_cammino_already_si() -> None:
+    label = tags.religioso_cdi(["spirituale"], [])
+    assert tags.religioso_by_name(label, "Cammino di San Tommaso") == label
+
+
+def test_name_rule_does_not_apply_to_osm_rows() -> None:
+    assert tags.religioso_osm("") == ("no", config.EVIDENZA_SILENTE)  # _osm_cammini non chiama la regola del nome
+    row = tags._osm_cammini({"osm:1": "piedi"}, [{"cammino_id": "osm:1", "fonte": "osm", "nome": "Via di San Pietro", "pilgrimage": ""}])[0]
+    assert (row["religioso"], row["evidenza_religioso"]) == ("no", config.EVIDENZA_SILENTE)
+
+
+def test_run_writes_only_the_two_label_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "INTERIM_DIR", tmp_path)
+    monkeypatch.setattr(config, "TAGS_TRATTE_CSV", tmp_path / "etichette_tratte.csv")
+    monkeypatch.setattr(config, "TAGS_CAMMINI_CSV", tmp_path / "etichette_cammini.csv")
+    monkeypatch.setattr(tags, "_cammini", lambda fonte: [])
+    monkeypatch.setattr(tags, "label_tratte", lambda osm: [])
+    monkeypatch.setattr(tags, "label_cammini", lambda tratte, osm: [])
+    tags.run()
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["etichette_cammini.csv", "etichette_tratte.csv"]
 
 
 # --- lettura e collegamento dei dati (fixture piccole) ---
@@ -336,7 +356,7 @@ def test_cdi_cammini_join_scheda_layer_and_mode(tmp_path: Path, monkeypatch: pyt
     assert (one["mezzo"], one["religioso"], one["portata"], one["tema"], one["stagione"]) == (
         ENTRAMBI, "si", "internazionale", "spirituale|storico", "estate|inverno",
     )
-    assert (two["mezzo"], two["religioso"], two["evidenza_religioso"], two["tema"]) == (PIEDI, "no", "silente", "")
+    assert (two["mezzo"], two["religioso"], two["evidenza_religioso"], two["tema"]) == (PIEDI, "no", config.EVIDENZA_SILENTE, "")
     assert one["credenziale"] == ""  # campi che la fonte non ha: vuoti
 
 

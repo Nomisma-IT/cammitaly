@@ -111,8 +111,13 @@ def _resolve_piece(index: PlaceIndex, piece: str, regions: frozenset[int] | None
     return set(), False
 
 
-def match_place(text: object, index: PlaceIndex, regions: frozenset[int] | None) -> tuple[str, str | None]:
-    """(esito, PRO_COM_T); solo ok porta il comune. Gli altri esiti scartano il nome: vedi i MATCH_* in config."""
+def match_place(
+    text: object, index: PlaceIndex, regions: frozenset[int] | None, allow_prefix: bool = False
+) -> tuple[str, str | None]:
+    """(esito, PRO_COM_T); solo ok porta il comune. Gli altri esiti scartano il nome: vedi i MATCH_* in config.
+
+    allow_prefix: un nome uguale al nome intero di un solo comune vale anche se e' l'inizio del nome di un altro
+    ("Oleggio" e "Oleggio Castello"): serve a chi cerca un luogo dichiarato per nome, non agli estremi di calibrazione."""
     if not isinstance(text, str) or not text.strip():
         return config.MATCH_EMPTY, None
     plain = re.sub(config.NAME_DASHES_PATTERN, "-", text)  # i trattini tipografici dividono come quelli ASCII
@@ -123,7 +128,7 @@ def match_place(text: object, index: PlaceIndex, regions: frozenset[int] | None)
     if len(found) > 1:
         same_piece = any(len(comuni) > 1 for comuni, _ in resolved)
         return (config.MATCH_HOMONYM if same_piece else config.MATCH_TWO_PLACES), None
-    if any(longer for _, longer in resolved):
+    if not allow_prefix and any(longer for _, longer in resolved):
         return config.MATCH_PREFIX, None
     return config.MATCH_OK, next(iter(found))
 
@@ -249,7 +254,7 @@ def run_published_endpoints(
     tappe = pd.read_csv(config.CDI_TAPPE_CSV, encoding="utf-8")
     tracks = pd.read_csv(config.WEBMAPP_TRACKS_CSV, encoding="utf-8")
     cammini = pd.read_csv(config.CDI_CAMMINI_CSV, encoding="utf-8")
-    walking = tratte_cdi[tratte_cdi["tipo"].isin(config.CROSSING_TIPI)]
+    walking = tratte_cdi[tratte_cdi["tipo"].isin(config.CALIBRATION_TIPI)]
     regions = regions_by_cammino(cammini, crossing.load_region_codes())
     matched = match_references(reference_names(tappe, tracks, walking), build_place_index(comuni), regions)
     ok = matched[matched["esito"] == config.MATCH_OK].copy()
@@ -471,7 +476,7 @@ def cammino_names(fonte: str) -> pd.Series:
 
 def cammino_spacing(tratte: pd.DataFrame) -> pd.Series:
     """Spaziatura media del cammino: lunghezza totale / segmenti totali delle sue tratte a piedi."""
-    walking = tratte[tratte["tipo"].isin(config.CROSSING_TIPI)]
+    walking = tratte[tratte["tipo"].isin(config.CALIBRATION_TIPI)]
     segments = walking["lunghezza_m"] / walking["spaziatura_media_m"]
     return walking["lunghezza_m"].groupby(walking["cammino_id"]).sum() / segments.groupby(walking["cammino_id"]).sum()
 
@@ -590,7 +595,7 @@ def run_cost_table(lines: gpd.GeoSeries, all_pairs: pd.DataFrame) -> pd.DataFram
 def run() -> None:
     comuni = crossing.load_comuni()
     tratte = common.read_tratte(config.CALIBRATION_FONTI)
-    lines = crossing.dissolve_cammini(tratte)
+    lines = crossing.dissolve_cammini(tratte, config.CALIBRATION_TIPI)
     all_pairs = crossing.comuni_entro(lines, comuni, max(DISTANCES))
     line_map = dict(lines.items())
     parts = [

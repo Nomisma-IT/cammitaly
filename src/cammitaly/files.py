@@ -171,7 +171,8 @@ def write_csv(path: Path, fieldnames: list[str], rows: Iterable[Mapping[str, obj
     path.parent.mkdir(parents=True, exist_ok=True)
     count = 0
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        # LF come common.write_frame: un solo fine riga per tutti i CSV (il default del modulo csv e' CRLF)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow(row)

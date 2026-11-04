@@ -2,20 +2,23 @@
 
 Regola, con la quota del piu' corto entro DEDUP_NEAR_M metri dall'altro (soglie in config):
 - nomi simili: quota >= DEDUP_OVERLAP_MIN duplicato; sotto DEDUP_DISTINCT_BELOW (due geometrie presenti) distinto; in
-  mezzo limbo "da verificare"; con una geometria assente limbo;
+  mezzo limbo "da verificare"; con una geometria assente limbo. Se un nome e' contenuto nell'altro e la quota e'
+  almeno DEDUP_SECTION_OVERLAP_MIN, la coppia e' una sezione e non un duplicato (cambia l'etichetta, non la fusione);
 - nomi non simili: quota >= DEDUP_SECTION_OVERLAP_MIN e almeno una parola in comune tra le chiavi dei nomi = sezione
   (il corto e' una parte dell'altro, si fonde); senza parola in comune limbo.
 Si confrontano tutte le coppie, anche dentro la stessa fonte. Le uscite sono in config.DEDUP_DIR; nulla qui cambia i
 cammini o le tratte.
 
-cammini_unici.csv e membri.csv: componenti connesse delle coppie duplicato e sezione; un cammino unito tiene tutte le
-tracce delle sue versioni. Non c'e' un file di geometrie: chi serve le tratte (tag, passo P5) le raccoglie per
-cammino_id dei membri, con le loro etichette.
+cammini_unici.csv e membri.csv: componenti connesse delle coppie duplicato e sezione, l'unica fonte dei gruppi; un
+cammino unito tiene tutte le tracce delle sue versioni. Non c'e' un file di geometrie: chi serve le tratte (tag, passo
+P5) le raccoglie per cammino_id dei membri, con le loro etichette.
 """
+import itertools
 from collections import defaultdict
-from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import geopandas as gpd
 import numpy as np
@@ -25,7 +28,7 @@ from rapidfuzz import fuzz
 from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
 
-from cammitaly import config, crossing, files, matching
+from cammitaly import config, crossing, matching
 from cammitaly.geometry import common
 
 COMUNE = config.COMUNE_ID_COL
@@ -34,13 +37,9 @@ Shares = dict[tuple[str, str], list[float]]
 
 
 def write_outputs(outputs: Mapping[str, pd.DataFrame]) -> None:
-    """Scrive ogni uscita in DEDUP_DIR; il limbo con lo stesso scrittore e contratto di limbo_<fonte>.csv, le altre come tabelle."""
+    """Scrive ogni uscita in DEDUP_DIR con lo scrittore comune (UTF-8, LF)."""
     for name, frame in outputs.items():
-        path = config.DEDUP_DIR / config.DEDUP_FILES[name]
-        if name == "limbo":
-            files.write_csv(path, config.LIMBO_FIELDS, frame.to_dict("records"))
-        else:
-            common.write_frame(frame, path)
+        common.write_frame(frame, config.DEDUP_DIR / config.DEDUP_FILES[name])
 
 
 # --- Dati di partenza ---
@@ -93,17 +92,6 @@ def osm_substitute_tratte(catalogue_ids: Iterable[str], tratte: gpd.GeoDataFrame
 
 # --- Quote di sovrapposizione ---
 
-def _shares_on_target(points: np.ndarray, weights: np.ndarray, target: BaseGeometry, nears_desc: Sequence[float]) -> list[float]:
-    """Quota dei punti entro ciascuna distanza; dalla piu' grande, cosi' i punti gia' lontani non si ricontrollano."""
-    alive = np.arange(len(points))
-    shares = []
-    for near in nears_desc:
-        if alive.size:
-            alive = alive[matching.points_near(points[alive], target, near)]
-        shares.append(float(weights[alive].sum() / weights.sum()))
-    return shares
-
-
 def overlap_shares(lines: Lines, near_values: Sequence[float]) -> Shares:
     """(sorgente, bersaglio) -> quota della sorgente entro ciascuna distanza, in ordine decrescente di distanza.
 
@@ -120,16 +108,65 @@ def overlap_shares(lines: Lines, near_values: Sequence[float]) -> Shares:
     for s, t in zip(source, target):
         if s != t:
             neighbours[int(s)].append(int(t))
+    # un indice per bersaglio, riusato da tutte le sorgenti vicine
+    needed = {t for targets in neighbours.values() for t in targets}
+    indexes = {t: matching.LineIndex(geoms[t]) for t in needed}
     shares: Shares = {}
     for s, targets in neighbours.items():
-        points, weights = matching.sample_points(geoms[s], config.MATCH_SAMPLE_M)
+        sample = matching.sample_line(geoms[s])
         for t in targets:
-            shares[(ids[s], ids[t])] = _shares_on_target(points, weights, geoms[t], nears_desc)
+            shares[(ids[s], ids[t])] = matching.shares_within(sample, indexes[t], nears_desc)
     return shares
 
 
 def share_column(direction: str, near_m: float) -> str:
     return f"quota_{direction}_{near_m:g}"
+
+
+def _side_columns(catalogue: pd.DataFrame, lengths: np.ndarray, order: np.ndarray, suffix: str) -> dict[str, np.ndarray]:
+    """Fonte, nome, stato e lunghezza del cammino di un lato della coppia (suffix "a" o "b"); order = posizioni nel catalogo."""
+    columns = {
+        f"{column}_{suffix}": catalogue[source].to_numpy()[order]
+        for column, source in (("fonte", "fonte"), ("nome", "nome"), ("stato", "stato_geometria"))
+    }
+    columns[f"lunghezza_{suffix}_m"] = lengths[order]
+    return columns
+
+
+def _name_columns(keys: Sequence[str], first: np.ndarray, second: np.ndarray) -> dict[str, np.ndarray | list[bool]]:
+    """Punteggi dei nomi (insieme di parole e ordinate), nome contenuto nell'altro e parola in comune di ogni coppia."""
+    set_scores, sort_scores = matching.name_scores(keys, keys), matching.name_scores(keys, keys, fuzz.token_sort_ratio)
+    words = [set(key.split()) for key in keys]
+    scores = set_scores[first, second]
+    return {
+        "punteggio_nome": scores, "punteggio_nome_sort": sort_scores[first, second],
+        "nome_contenuto": [score == 100 and words[a] != words[b] for a, b, score in zip(first, second, scores)],
+        "parola_comune": [bool(words[a] & words[b]) for a, b in zip(first, second)],
+    }
+
+
+def _osm_side(pairs: pd.DataFrame, osm_ids: Collection[str]) -> np.ndarray:
+    """Quale lato della coppia usa la geometria OSM sostitutiva."""
+    side_a, side_b = pairs["cammino_a"].isin(osm_ids), pairs["cammino_b"].isin(osm_ids)
+    return np.select(
+        [side_a & side_b, side_a, side_b], [config.DEDUP_OSM_SIDE_BOTH, config.DEDUP_OSM_SIDE_A, config.DEDUP_OSM_SIDE_B],
+        default=config.DEDUP_OSM_SIDE_NONE,
+    )
+
+
+def _share_columns(pairs: pd.DataFrame, lines: Lines, near_values: Sequence[float]) -> dict[str, list[float]]:
+    """Le colonne delle quote, per direzione e distanza: NaN se manca una geometria, 0 se i riquadri non si toccano."""
+    shares = overlap_shares(lines, near_values)
+    nears_desc = sorted(near_values, reverse=True)
+    far = [0.0] * len(nears_desc)
+    columns = {}
+    for direction, (own, other) in {"a_in_b": ("cammino_a", "cammino_b"), "b_in_a": ("cammino_b", "cammino_a")}.items():
+        for position, near in enumerate(nears_desc):
+            columns[share_column(direction, near)] = [
+                shares.get((s, t), far)[position] if s in lines and t in lines else np.nan
+                for s, t in zip(pairs[own], pairs[other])
+            ]
+    return columns
 
 
 def pair_table(
@@ -142,33 +179,13 @@ def pair_table(
     """
     ids = catalogue["cammino_id"].to_numpy()
     first, second = np.triu_indices(len(ids), 1)
-    keys = catalogue["chiave"].tolist()
     lengths = np.array([lines[cammino_id].length if cammino_id in lines else np.nan for cammino_id in ids])
-    set_scores, sort_scores = matching.name_scores(keys, keys), matching.name_scores(keys, keys, fuzz.token_sort_ratio)
-    pairs = pd.DataFrame({"cammino_a": ids[first], "cammino_b": ids[second]})
-    for suffix, order in (("a", first), ("b", second)):
-        for column, source in (("fonte", "fonte"), ("nome", "nome"), ("stato", "stato_geometria")):
-            pairs[f"{column}_{suffix}"] = catalogue[source].to_numpy()[order]
-        pairs[f"lunghezza_{suffix}_m"] = lengths[order]
-    pairs["punteggio_nome"], pairs["punteggio_nome_sort"] = set_scores[first, second], sort_scores[first, second]
-    side_a, side_b = pairs["cammino_a"].isin(osm_ids), pairs["cammino_b"].isin(osm_ids)
-    pairs["geometria_osm"] = np.select(
-        [side_a & side_b, side_a, side_b], [config.DEDUP_OSM_SIDE_BOTH, config.DEDUP_OSM_SIDE_A, config.DEDUP_OSM_SIDE_B],
-        default=config.DEDUP_OSM_SIDE_NONE,
+    pairs = pd.DataFrame({"cammino_a": ids[first], "cammino_b": ids[second]}).assign(
+        **_side_columns(catalogue, lengths, first, "a"), **_side_columns(catalogue, lengths, second, "b"),
+        **_name_columns(catalogue["chiave"].tolist(), first, second),
     )
-    pairs["nome_contenuto"] = [
-        score == 100 and set(keys[a].split()) != set(keys[b].split()) for a, b, score in zip(first, second, pairs["punteggio_nome"])
-    ]
-    pairs["parola_comune"] = [bool(set(keys[a].split()) & set(keys[b].split())) for a, b in zip(first, second)]
-    shares = overlap_shares(lines, near_values)
-    nears_desc = sorted(near_values, reverse=True)
-    for direction, (own, other) in {"a_in_b": ("cammino_a", "cammino_b"), "b_in_a": ("cammino_b", "cammino_a")}.items():
-        for position, near in enumerate(nears_desc):
-            pairs[share_column(direction, near)] = [
-                shares.get((s, t), [0.0] * len(nears_desc))[position] if s in lines and t in lines else np.nan
-                for s, t in zip(pairs[own], pairs[other])
-            ]
-    return pairs
+    pairs["geometria_osm"] = _osm_side(pairs, osm_ids)
+    return pairs.assign(**_share_columns(pairs, lines, near_values))
 
 
 def minor_is_a(pairs: pd.DataFrame, near_m: float) -> pd.Series:
@@ -189,18 +206,33 @@ def minor_share(pairs: pd.DataFrame, near_m: float) -> pd.Series:
 
 # --- Classi ---
 
-def classify(pairs: pd.DataFrame, name_min: float, overlap_min: float, near_m: float) -> pd.DataFrame:
+class Thresholds(NamedTuple):
+    """Le soglie della regola: i valori di config sono quelli adottati, la griglia di sensibilita' li fa variare."""
+    name_min: float = config.DEDUP_NAME_MIN_SCORE
+    overlap_min: float = config.DEDUP_OVERLAP_MIN
+    near_m: float = config.DEDUP_NEAR_M
+    distinct_below: float = config.DEDUP_DISTINCT_BELOW
+
+
+ADOPTED = Thresholds()
+
+
+def classify(pairs: pd.DataFrame, thresholds: Thresholds = ADOPTED) -> pd.DataFrame:
     """Colonne classe e motivo di ogni coppia con le soglie date (la regola D-12 e la griglia di sensibilita' usano questa).
 
-    Le soglie del distinto e della sezione vengono da config; name_min, overlap_min e near_m variano nella griglia.
+    La soglia della sezione viene da config: non varia nella griglia. Ordine delle regole: la prima vera vince.
     """
-    quota = minor_share(pairs, near_m)
-    similar, known = pairs["punteggio_nome"] >= name_min, quota.notna()
-    duplicate = similar & (quota >= overlap_min)
-    apart = similar & (quota < config.DEDUP_DISTINCT_BELOW)
+    quota = minor_share(pairs, thresholds.near_m)
+    similar, known = pairs["punteggio_nome"] >= thresholds.name_min, quota.notna()
+    duplicate = similar & (quota >= thresholds.overlap_min)
+    apart = similar & (quota < thresholds.distinct_below)
+    # nome contenuto nell'altro ("Via Francigena" in "Magna Via Francigena nel Sud") e tracciato contenuto: e' una sezione
+    # anche se il punteggio dice "simile"; la fusione e' la stessa del duplicato, cambia il ruolo in membri.csv
+    section_of_whole = similar & pairs["nome_contenuto"] & (quota >= config.DEDUP_SECTION_OVERLAP_MIN)
     contained = ~similar & (quota >= config.DEDUP_SECTION_OVERLAP_MIN)
     shared = pairs["parola_comune"]
     reasons = [
+        (section_of_whole, config.CLASSE_SEZIONE, config.MOTIVO_SEZIONE),
         (duplicate, config.CLASSE_DUPLICATO, config.MOTIVO_DUPLICATO),
         (apart, config.CLASSE_DISTINTO, config.MOTIVO_NOME_SI_TRACCIATO_NO),
         (similar & known & ~duplicate & ~apart, config.CLASSE_LIMBO, config.MOTIVO_NOME_SI_TRACCIATO_INTERMEDIO),
@@ -218,15 +250,16 @@ def classify(pairs: pd.DataFrame, name_min: float, overlap_min: float, near_m: f
 
 
 def coppie_frame(pairs: pd.DataFrame) -> pd.DataFrame:
-    """coppie.csv: i candidati (nome simile alla soglia piu' bassa della griglia, o tracciati che si toccano) con la classe D-2."""
-    near = config.DEDUP_NEAR_M
+    """coppie.csv: i candidati (nome simile alla soglia piu' bassa della griglia, o tracciati che si toccano) con la classe
+    della regola adottata (D-12, soglie ADOPTED)."""
+    near = ADOPTED.near_m
     quota_minore = minor_share(pairs, near)
     # minimum/maximum propagano NaN: senza una delle due geometrie il rapporto resta vuoto
     shorter, longer = np.minimum(pairs["lunghezza_a_m"], pairs["lunghezza_b_m"]), np.maximum(pairs["lunghezza_a_m"], pairs["lunghezza_b_m"])
     frame = pairs.assign(
         quota_a_in_b=pairs[share_column("a_in_b", near)], quota_b_in_a=pairs[share_column("b_in_a", near)],
         quota_minore=quota_minore, rapporto_lunghezza=shorter / longer,
-    ).join(classify(pairs, config.DEDUP_NAME_MIN_SCORE, config.DEDUP_OVERLAP_MIN, near))
+    ).join(classify(pairs))
     frame = frame[(frame["punteggio_nome"] >= config.DEDUP_CANDIDATE_NAME_MIN) | (frame["quota_minore"] > 0)]
     rank = frame["classe"].map({config.CLASSE_DUPLICATO: 0, config.CLASSE_SEZIONE: 1, config.CLASSE_LIMBO: 2, config.CLASSE_DISTINTO: 3})
     frame = frame.assign(_rank=rank).sort_values(
@@ -262,46 +295,6 @@ def limbo_rows(coppie: pd.DataFrame) -> list[dict[str, str]]:
     return rows
 
 
-# --- Gruppi di duplicati ---
-
-def connected_groups(edges: Iterable[tuple[Hashable, Hashable]]) -> list[list[Hashable]]:
-    """Componenti connesse del grafo non orientato dato dagli archi (solo i nodi che compaiono in un arco)."""
-    parent: dict[Hashable, Hashable] = {}
-
-    def find(node: Hashable) -> Hashable:
-        while parent.setdefault(node, node) != node:
-            parent[node] = parent[parent[node]]
-            node = parent[node]
-        return node
-
-    for first, second in edges:
-        parent[find(first)] = find(second)
-    groups: dict[Hashable, list[Hashable]] = defaultdict(list)
-    for node in list(parent):
-        groups[find(node)].append(node)
-    return list(groups.values())
-
-
-def gruppi_frame(catalogue: pd.DataFrame, lines: Lines, duplicates: pd.DataFrame) -> pd.DataFrame:
-    """Una riga per cammino di ogni gruppo di duplicati; `catena` vale vero se non tutte le coppie del gruppo sono duplicato."""
-    position = {cammino_id: n for n, cammino_id in enumerate(catalogue["cammino_id"])}
-    edges = list(zip(duplicates["cammino_a"], duplicates["cammino_b"]))
-    groups = sorted((sorted(group, key=position.__getitem__) for group in connected_groups(edges)), key=lambda g: position[g[0]])
-    info = catalogue.set_index("cammino_id")
-    rows = []
-    for number, members in enumerate(groups, start=1):
-        n_edges = sum(1 for a, b in edges if a in members)
-        chain = n_edges < len(members) * (len(members) - 1) // 2
-        for cammino_id in members:
-            length = round(lines[cammino_id].length, config.METERS_DECIMALS) if cammino_id in lines else np.nan
-            rows.append({
-                "gruppo": config.DEDUP_GROUP_ID_FORMAT.format(number=number), "cammino_id": cammino_id, "fonte": info.at[cammino_id, "fonte"],
-                "nome": info.at[cammino_id, "nome"], "stato_geometria": info.at[cammino_id, "stato_geometria"],
-                "lunghezza_m": length, "catena": chain,
-            })
-    return pd.DataFrame(rows, columns=list(config.DEDUP_GRUPPI_FIELDS))
-
-
 # --- Cammini unici: duplicato e sezione si fondono ---
 
 def _length_of(lengths: Mapping[str, float], cammino_id: str) -> float:
@@ -318,34 +311,58 @@ def _role(member: str, main: str, members: Sequence[str], edge_class: Mapping[fr
     return config.RUOLO_DUPLICATO if kind == config.CLASSE_DUPLICATO else config.RUOLO_SEZIONE
 
 
+def _aliases(names: Iterable[str], main_name: str) -> list[str]:
+    """Gli altri nomi del cammino unico, uno per chiave di nome: maiuscole, articoli e parole generiche non fanno un alias."""
+    seen = {matching.name_key(main_name)}
+    aliases = []
+    for name in names:
+        if (key := matching.name_key(name)) not in seen:
+            seen.add(key)
+            aliases.append(name)
+    return aliases
+
+
+def _ordered_groups(position: Mapping[str, int], merging: pd.DataFrame) -> list[list[str]]:
+    """Componenti connesse degli archi di fusione piu' i cammini senza archi, ciascuna nell'ordine del catalogo, e in quell'ordine tra loro."""
+    linked = matching.connected_groups(zip(merging["cammino_a"], merging["cammino_b"]))
+    in_group = {cammino_id for group in linked for cammino_id in group}
+    groups = [*linked, *([cammino_id] for cammino_id in position if cammino_id not in in_group)]
+    return sorted((sorted(group, key=position.__getitem__) for group in groups), key=lambda group: position[group[0]])
+
+
+def _is_chain(members: Sequence[str], position: Mapping[str, int], edge_class: Mapping[frozenset, str]) -> bool:
+    """Vero se non tutte le coppie dei membri sono archi di fusione."""
+    links = sum(1 for a in members for b in members if position[a] < position[b] and frozenset((a, b)) in edge_class)
+    return links < len(members) * (len(members) - 1) // 2
+
+
+def _unique_row(unico_id: str, members: Sequence[str], main: str, info: pd.DataFrame, chain: bool) -> dict[str, object]:
+    return {
+        "cammino_unico_id": unico_id, "nome": info.at[main, "nome"],
+        "fonti": config.DEDUP_LIST_SEPARATOR.join(sorted(set(info.loc[members, "fonte"]))),
+        "n_membri": len(members), "membri": config.DEDUP_LIST_SEPARATOR.join(members),
+        "alias": config.DEDUP_LIST_SEPARATOR.join(_aliases(dict.fromkeys(info.loc[members, "nome"]), info.at[main, "nome"])),
+        "stato": min(info.loc[members, "stato_geometria"], key=config.DEDUP_STATO_ORDER.index),
+        "catena": chain,
+    }
+
+
 def unique_frames(catalogue: pd.DataFrame, lengths: Mapping[str, float], merging: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """(cammini_unici, membri): componenti connesse delle coppie duplicato e sezione; ogni cammino del catalogo compare una volta.
 
     lengths: lunghezza della linea per cammino (assente se senza geometria). merging: coppie con cammino_a, cammino_b e classe.
     Il principale e' il membro piu' lungo (a parita' il primo del catalogo), il nome del cammino unico e' il suo; alias sono
-    i nomi diversi degli altri membri. `catena` e' vero se non tutte le coppie dei membri sono archi. Stato: il migliore dei membri.
+    i nomi degli altri membri con una chiave di nome diversa. `catena` e' vero se non tutte le coppie dei membri sono
+    archi. Stato: il migliore dei membri.
     """
     position = {cammino_id: n for n, cammino_id in enumerate(catalogue["cammino_id"])}
     edge_class = {frozenset(pair[:2]): pair[2] for pair in zip(merging["cammino_a"], merging["cammino_b"], merging["classe"])}
-    linked = connected_groups(zip(merging["cammino_a"], merging["cammino_b"]))
-    in_group = {cammino_id for group in linked for cammino_id in group}
-    groups = [*linked, *([cammino_id] for cammino_id in catalogue["cammino_id"] if cammino_id not in in_group)]
-    ordered = sorted((sorted(group, key=position.__getitem__) for group in groups), key=lambda group: position[group[0]])
     info = catalogue.set_index("cammino_id")
     unici, membri = [], []
-    for number, members in enumerate(ordered, start=1):
+    for number, members in enumerate(_ordered_groups(position, merging), start=1):
         unico_id = config.DEDUP_UNICO_ID_FORMAT.format(number=number)
         main = max(members, key=lambda m: (_length_of(lengths, m), -position[m]))
-        aliases = [name for name in dict.fromkeys(info.loc[members, "nome"]) if name != info.at[main, "nome"]]
-        links = sum(1 for a in members for b in members if position[a] < position[b] and frozenset((a, b)) in edge_class)
-        unici.append({
-            "cammino_unico_id": unico_id, "nome": info.at[main, "nome"],
-            "fonti": config.DEDUP_LIST_SEPARATOR.join(sorted(set(info.loc[members, "fonte"]))),
-            "n_membri": len(members), "membri": config.DEDUP_LIST_SEPARATOR.join(members),
-            "alias": config.DEDUP_LIST_SEPARATOR.join(aliases),
-            "stato": min(info.loc[members, "stato_geometria"], key=config.DEDUP_STATO_ORDER.index),
-            "catena": links < len(members) * (len(members) - 1) // 2,
-        })
+        unici.append(_unique_row(unico_id, members, main, info, _is_chain(members, position, edge_class)))
         membri.extend(
             {"cammino_unico_id": unico_id, "cammino_id": member, "fonte": info.at[member, "fonte"],
              "nome": info.at[member, "nome"], "ruolo": _role(member, main, members, edge_class)}
@@ -357,23 +374,28 @@ def unique_frames(catalogue: pd.DataFrame, lengths: Mapping[str, float], merging
 # --- Sensibilita' ---
 
 def sensitivity_frame(pairs: pd.DataFrame) -> pd.DataFrame:
-    """Conteggi per classe a ogni combinazione di soglia sul nome, quota minima e distanza, su tutte le coppie."""
+    """Conteggi per classe a ogni combinazione di soglia sul nome, quota minima, quota del distinto e distanza, su tutte le coppie.
+
+    I quattro conteggi di classe sommano al numero di tutte le coppie.
+    """
     rows = []
     identical = pairs["punteggio_nome"] == 100
-    for name_min in config.DEDUP_SENS_NAME_SCORES:
-        for overlap_min in config.DEDUP_SENS_OVERLAPS:
-            for near_m in config.DEDUP_SENS_NEAR_M:
-                counts = classify(pairs, name_min, overlap_min, near_m)["classe"].value_counts()
-                quota = minor_share(pairs, near_m)
-                rows.append({
-                    "soglia_nome": name_min, "soglia_quota": overlap_min, "distanza_m": near_m,
-                    "n_duplicato": int(counts.get(config.CLASSE_DUPLICATO, 0)),
-                    "n_limbo": int(counts.get(config.CLASSE_LIMBO, 0)),
-                    "n_distinto": int(counts.get(config.CLASSE_DISTINTO, 0)),
-                    "n_nome_100": int(identical.sum()),
-                    "n_nome_100_tracciato_diverso": int((identical & (quota < overlap_min)).sum()),
-                    "n_nome_100_geometria_assente": int((identical & quota.isna()).sum()),
-                })
+    grid = itertools.product(
+        config.DEDUP_SENS_NAME_SCORES, config.DEDUP_SENS_OVERLAPS, config.DEDUP_SENS_DISTINCT_BELOW, config.DEDUP_SENS_NEAR_M
+    )
+    for name_min, overlap_min, distinct_below, near_m in grid:
+        counts = classify(pairs, Thresholds(name_min, overlap_min, near_m, distinct_below))["classe"].value_counts()
+        quota = minor_share(pairs, near_m)
+        rows.append({
+            "soglia_nome": name_min, "soglia_quota": overlap_min, "soglia_distinto": distinct_below, "distanza_m": near_m,
+            "n_duplicato": int(counts.get(config.CLASSE_DUPLICATO, 0)),
+            "n_sezione": int(counts.get(config.CLASSE_SEZIONE, 0)),
+            "n_limbo": int(counts.get(config.CLASSE_LIMBO, 0)),
+            "n_distinto": int(counts.get(config.CLASSE_DISTINTO, 0)),
+            "n_nome_100": int(identical.sum()),
+            "n_nome_100_tracciato_diverso": int((identical & (quota < overlap_min)).sum()),
+            "n_nome_100_geometria_assente": int((identical & quota.isna()).sum()),
+        })
     return pd.DataFrame(rows, columns=list(config.DEDUP_SENSIBILITA_FIELDS))
 
 
@@ -503,6 +525,7 @@ def comuni_selection(coppie: pd.DataFrame, quasi: pd.DataFrame) -> pd.DataFrame:
     columns = ["cammino_a", "cammino_b", "nome_a", "nome_b", "quota_minore"]
     key = ["cammino_a", "cammino_b"]
     in_quasi = pd.MultiIndex.from_frame(coppie[key]).isin(pd.MultiIndex.from_frame(quasi[key]))
+    # solo duplicati e quasi duplicati: le sezioni sono per definizione un sottoinsieme dell'intero, il confronto dei comuni non le riguarda
     duplicates = coppie[(coppie["classe"] == config.CLASSE_DUPLICATO) & ~in_quasi]
     near = quasi[columns].assign(classe=config.CLASSE_QUASI_DUPLICATO)
     return pd.concat([duplicates[[*columns, "classe"]], near], ignore_index=True)
@@ -523,7 +546,6 @@ def build_outputs(
     return {
         "coppie": coppie,
         "limbo": pd.DataFrame(limbo_rows(coppie), columns=config.LIMBO_FIELDS),
-        "gruppi": gruppi_frame(catalogue, lines, coppie[coppie["classe"] == config.CLASSE_DUPLICATO]),
         "sensibilita": sensitivity_frame(pairs),
         "quasi": quasi,
         "comuni": comuni_frame(comuni_selection(coppie, quasi), lines, comuni),
@@ -545,6 +567,6 @@ def run() -> None:
     print(f"cammini {len(catalogue)}, con linea {len(lines)} (geometria OSM sostitutiva {len(osm_ids)}); coppie candidate {len(coppie)}")
     print(coppie["classe"].value_counts().to_string())
     print(f"limbo per motivo\n{coppie.loc[coppie['classe'] == config.CLASSE_LIMBO, 'motivo'].value_counts().to_string()}")
-    print(f"gruppi {outputs['gruppi']['gruppo'].nunique()}, quasi duplicati {len(outputs['quasi'])}")
+    print(f"quasi duplicati {len(outputs['quasi'])}")
     unici = outputs["unici"]
     print(f"cammini distinti {len(unici)} (da {len(catalogue)}), con piu' membri {int((unici['n_membri'] > 1).sum())}, catene {int(unici['catena'].sum())}")

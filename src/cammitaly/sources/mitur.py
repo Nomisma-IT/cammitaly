@@ -207,10 +207,42 @@ def _read_pages() -> list[tuple[int, str, str]]:
     # Il file salvato dal browser puo' avere byte non utf-8: si sostituiscono invece di fermarsi
     texts = [(p.name, p.read_bytes().decode("utf-8", errors="replace")) for p in paths]
     pages = sorted((parse_page_number(text, name), name, text) for name, text in texts)
-    numbers = [number for number, _, _ in pages]
-    if len(set(numbers)) != len(numbers):
-        raise http.FetchError(f"due file salvati sono la stessa pagina di elenco: {numbers}")
+    check_page_set(pages)
     return pages
+
+
+def declared_last_page(markup: str) -> int | None:
+    """Ultima pagina dell'elenco secondo la paginazione della pagina salvata; None se la paginazione non c'e'."""
+    numbers = [int(found) for found in re.findall(config.MITUR_PAGINATION_PATTERN, markup)]
+    return max(numbers, default=None)
+
+
+def check_page_set(pages: list[tuple[int, str, str]]) -> None:
+    """Le pagine salvate sono tutte e sole 1..N, ciascuna una volta; N lo dice la paginazione, uguale in ogni file.
+
+    Senza paginazione in nessun file (elenco di una pagina sola) N e' il numero piu' alto trovato: il controllo
+    e' piu' debole, vede i buchi e i doppioni ma non le pagine finali mancanti.
+    """
+    declared = {name: declared_last_page(text) for _, name, text in pages}
+    if len(set(declared.values())) > 1:
+        raise http.FetchError(
+            f"le pagine salvate non concordano sul numero di pagine dell'elenco (file di mesi diversi?): {declared}"
+        )
+    files_by_number: dict[int, list[str]] = {}
+    for number, name, _ in pages:
+        files_by_number.setdefault(number, []).append(name)
+    last = next(iter(declared.values())) or max(files_by_number)
+    duplicated = {number: names for number, names in files_by_number.items() if len(names) > 1}
+    if duplicated:
+        listing = "; ".join(f"pagina {number}: {', '.join(names)}" for number, names in sorted(duplicated.items()))
+        raise http.FetchError(f"due file salvati sono la stessa pagina di elenco ({listing})")
+    extra = {number: names for number, names in files_by_number.items() if number > last}
+    if extra:
+        listing = ", ".join(name for _, names in sorted(extra.items()) for name in names)
+        raise http.FetchError(f"file oltre l'ultima pagina dell'elenco ({last}): {listing}")
+    missing = [number for number in range(1, last + 1) if number not in files_by_number]
+    if missing:
+        raise http.FetchError(f"pagine di elenco mancanti: {', '.join(map(str, missing))} (l'elenco ne ha {last})")
 
 
 def _read_items() -> list[dict[str, Any]]:

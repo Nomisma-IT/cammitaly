@@ -22,6 +22,13 @@ class FetchError(RuntimeError):
 # Stato per host della singola esecuzione: ultimo istante di richiesta e conteggio
 _last_request_at: dict[str, float] = {}
 _request_count: dict[str, int] = {}
+# Tetto della sola esecuzione corrente, al posto di quello fisso di config.HOSTS (vedi set_request_cap)
+_request_cap: dict[str, int] = {}
+
+
+def set_request_cap(host_key: str, remaining: int) -> None:
+    """Tetto per questa esecuzione: le richieste gia' fatte a host_key piu' `remaining`."""
+    _request_cap[host_key] = _request_count.get(host_key, 0) + remaining
 
 
 class RedirectBlockedError(FetchError):
@@ -61,8 +68,9 @@ def _last_logged_request(host_key: str) -> float:
 def _wait_turn(host_key: str) -> None:
     policy = config.HOSTS[host_key]
     done = _request_count.get(host_key, 0)
-    if done >= policy.max_requests:
-        raise FetchError(f"tetto di {policy.max_requests} richieste raggiunto per {host_key}")
+    cap = _request_cap.get(host_key, policy.max_requests)
+    if done >= cap:
+        raise FetchError(f"tetto di {cap} richieste raggiunto per {host_key}")
     if host_key not in _last_request_at:
         _last_request_at[host_key] = _last_logged_request(host_key)
     pause = policy.min_interval_s - (time.time() - _last_request_at[host_key])

@@ -93,7 +93,7 @@ def test_poligono_non_valido_viene_riparato() -> None:
     assert repaired[0].area == pytest.approx(50)
 
 
-def test_dissolve_esclude_le_tracce_per_bici_e_unisce_le_tratte() -> None:
+def test_dissolve_tiene_di_default_anche_la_bici_e_filtra_sui_tipi_richiesti() -> None:
     tratte = gpd.GeoDataFrame(
         {"cammino_id": ["c1", "c1", "c1", "c2"], "tipo": ["tappa", "variante", "bici", "tappa"]},
         geometry=[LineString([(0, 0), (100, 0)]), LineString([(100, 0), (300, 0)]), LineString([(0, 50), (5000, 50)]),
@@ -102,7 +102,10 @@ def test_dissolve_esclude_le_tracce_per_bici_e_unisce_le_tratte() -> None:
     )
     dissolved = crossing.dissolve_cammini(tratte)
     assert dissolved.index.name == "cammino_id" and set(dissolved.index) == {"c1", "c2"}
-    assert dissolved["c1"].length == pytest.approx(300)
+    # Il tipo predefinito (CROSSING_TIPI) comprende la bici dal giorno in cui il committente l'ha voluta nel cammino
+    assert dissolved["c1"].length == pytest.approx(300 + 5000)
+    without_bike = crossing.dissolve_cammini(tratte, tipi=(config.TIPO_TAPPA, config.TIPO_VARIANTE))
+    assert without_bike["c1"].length == pytest.approx(300)
     assert crossing.dissolve_cammini(tratte, tipi=("bici",)).index.tolist() == ["c1"]
 
 
