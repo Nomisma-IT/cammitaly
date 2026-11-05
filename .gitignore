@@ -5,3 +5,5 @@ __pycache__/
 .pytest_cache/
 # Tutti i dati sono rigenerabili dalle fonti o salvati a mano dal proprietario
 data/
+# Cartella dei pacchetti inviati ai lettori, non fa parte del codice
+/deliverables/
